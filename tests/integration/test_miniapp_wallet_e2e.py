@@ -558,7 +558,9 @@ async def test_manual_withdraw_checkbox_forces_a_real_review_status(gateway_serv
     await fund_user(conn, user_row["id"], Decimal("500.00"))
 
     await _open_wallet_tab(page, "withdraw")
-    await page.fill("#withdraw-amount-input", "100")
+    # At or above min_withdraw_etb (200 by default): anything smaller is
+    # refused as below the minimum before the manual rail is ever reached.
+    await page.fill("#withdraw-amount-input", "250")
     await page.fill("#withdraw-account-input", "0911223344")
     await page.fill("#withdraw-name-input", "Test Holder")
     await page.check("#withdraw-manual-checkbox")
@@ -712,7 +714,9 @@ async def test_full_lifecycle_registration_through_withdrawal_using_the_manual_r
         destination_selector = f'.destination-card[data-id="{destination_row["id"]}"]'
         await page.wait_for_selector(destination_selector, timeout=10000)
         await page.click(destination_selector)
-        await page.fill("#deposit-manual-amount-input", "100")
+        # Enough that what's left after one 10 ETB round still clears the
+        # 200 ETB withdrawal minimum at the end of this test.
+        await page.fill("#deposit-manual-amount-input", "300")
         await page.fill("#deposit-manual-reference-input", "FT-E2E-LIFECYCLE-1")
         await page.click("#deposit-manual-submit-btn")
         await page.wait_for_selector("#deposit-manual-status.success", timeout=10000)
@@ -730,7 +734,7 @@ async def test_full_lifecycle_registration_through_withdrawal_using_the_manual_r
         )
         assert approved == "credited"
         await page.wait_for_function(
-            "document.getElementById('wallet-cash').textContent.includes('100.00')", timeout=10000
+            "document.getElementById('wallet-cash').textContent.includes('300.00')", timeout=10000
         )
         # request_withdrawal()'s chargeback-window gate (30 real minutes
         # in this environment's settings) correctly treats a just-

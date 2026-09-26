@@ -477,7 +477,9 @@ class KenoRoundEngine:
         # finds the ticket already settled).
         for user_id, ticket_id, matches, payout, jackpot_payout, stake, autoplay_session_id in to_publish:
             try:
-                _publish_private_ticket_settled(self._redis, user_id, round_id, ticket_id, matches, payout, jackpot_payout)
+                _publish_private_ticket_settled(
+                    self._redis, user_id, round_id, ticket_id, matches, payout, jackpot_payout, stake
+                )
                 await ledger.publish_balance_update(self._pool, self._redis, user_id)
             except Exception:
                 # A missed push only; the client re-reads state on its next event.
@@ -748,7 +750,14 @@ class KenoRoundEngine:
 
 
 def _publish_private_ticket_settled(
-    redis: Redis, user_id: int, round_id: int, ticket_id: int, matches: int, payout: Decimal, jackpot_payout: Decimal
+    redis: Redis,
+    user_id: int,
+    round_id: int,
+    ticket_id: int,
+    matches: int,
+    payout: Decimal,
+    jackpot_payout: Decimal,
+    stake: Decimal,
 ) -> None:
     asyncio.ensure_future(
         redis.publish(
@@ -761,6 +770,9 @@ def _publish_private_ticket_settled(
                     "matches": matches,
                     "payout": str(payout),
                     "jackpot_payout": str(jackpot_payout) if jackpot_payout > 0 else None,
+                    # The Mini App compares payout with stake so a ticket that
+                    # returns less than it cost isn't celebrated as a win.
+                    "stake": str(stake),
                 },
                 default=str,
             ),

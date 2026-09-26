@@ -94,6 +94,7 @@
   "wallet.error.invalid_amount": "Please enter a valid amount.",
   "wallet.error.rate_limited": "Too many deposit attempts. Please wait a bit and try again.",
   "wallet.error.below_minimum": "That's below the minimum amount.",
+  "wallet.error.below_minimum_amount": "That's below the minimum of {min} ETB.",
   "wallet.error.daily_cap_exceeded": "You've reached today's deposit limit.",
   "wallet.error.self_excluded": "Your account is currently self-excluded.",
   "wallet.error.cooling_off": "You're in a cool-off period right now.",
@@ -264,6 +265,9 @@
   "keno.result.lose_title": "No win this round",
   "keno.result.no_win": "0.00 ETB",
   "keno.result.ticket_line": "{matches} matched — {amount} ETB",
+  "keno.result.returned_title": "Part of your stake back",
+  "keno.result.returned_amount": "{amount} ETB returned",
+  "keno.result.net_line": "Net this round: {net} ETB",
 
   "keno.paytable_match_row": "{matches} of {picks} matched",
 

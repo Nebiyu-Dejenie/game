@@ -1439,6 +1439,7 @@ let telebirrDestinationLoaded = false;
 const DEPOSIT_MANUAL_HIDDEN_FROM_UI = true;
 
 async function applyPaymentAvailability() {
+  loadPaymentLimits();
   try {
     const response = await fetch("/api/payment-methods", { headers: authHeader() });
     if (!response.ok) return;
@@ -1539,9 +1540,38 @@ function authHeader() {
   return raw ? { Authorization: `tma ${raw}` } : {};
 }
 
+// The payment limits in force (GET /api/limits), so a "below minimum"
+// message can say what the minimum actually is. Informational only: the
+// server enforces every limit itself.
+let paymentLimits = null;
+
+async function loadPaymentLimits() {
+  try {
+    const response = await fetch("/api/limits", { headers: authHeader() });
+    if (response.ok) paymentLimits = await response.json();
+  } catch {
+    /* the generic message still works without it */
+  }
+}
+
+function minimumFor(statusId) {
+  if (!paymentLimits) return null;
+  return statusId.startsWith("withdraw") ? paymentLimits.min_withdraw : paymentLimits.min_deposit;
+}
+
+// True (and shows the error) when the amount is under the known minimum --
+// saves a round trip; the server makes the same check regardless.
+function belowKnownMinimum(statusId, amount) {
+  const min = minimumFor(statusId);
+  if (min === null || Number(amount) >= Number(min)) return false;
+  setWalletStatus(statusId, "wallet.error.below_minimum", "error");
+  return true;
+}
+
 function setWalletStatus(id, key, kind) {
   const node = el(id);
-  node.textContent = key ? t(key) : "";
+  const min = key === "wallet.error.below_minimum" ? minimumFor(id) : null;
+  node.textContent = !key ? "" : min !== null ? t("wallet.error.below_minimum_amount", { min }) : t(key);
   node.classList.remove("error", "success");
   if (kind) node.classList.add(kind);
 }
@@ -1609,6 +1639,7 @@ el("deposit-submit-btn").addEventListener("click", async () => {
     setWalletStatus("deposit-status", "wallet.error.invalid_amount", "error");
     return;
   }
+  if (belowKnownMinimum("deposit-status", amount)) return;
   el("deposit-submit-btn").disabled = true;
   setWalletStatus("deposit-status", "wallet.deposit_opening", null);
   try {
@@ -1885,6 +1916,7 @@ el("deposit-manual-submit-btn").addEventListener("click", async () => {
     setWalletStatus("deposit-manual-status", "wallet.error.invalid_amount", "error");
     return;
   }
+  if (belowKnownMinimum("deposit-manual-status", amount)) return;
   el("deposit-manual-submit-btn").disabled = true;
   setWalletStatus("deposit-manual-status", "wallet.deposit_opening", null);
   try {
@@ -1944,6 +1976,7 @@ el("withdraw-submit-btn").addEventListener("click", async () => {
     setWalletStatus("withdraw-status", "wallet.error.invalid_amount", "error");
     return;
   }
+  if (belowKnownMinimum("withdraw-status", amount)) return;
   el("withdraw-submit-btn").disabled = true;
   setWalletStatus("withdraw-status", "wallet.withdraw_submitting", null);
   setWithdrawSummaryStatus(t("wallet.withdraw_submitting"), "pending");

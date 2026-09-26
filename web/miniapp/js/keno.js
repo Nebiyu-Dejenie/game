@@ -559,7 +559,13 @@ function openAutoplaySetup() {
   autoplayRoundsSelection = 10;
   const chipsEl = el("keno-autoplay-rounds-chips");
   chipsEl.innerHTML = "";
-  const options = [["5", 5], ["10", 10], ["25", 25], ["50", 50], [t("keno.autoplay_no_limit"), null]];
+  // The operator's cap (max_autoplay_rounds): offer only counts under it,
+  // plus the cap itself. The server refuses anything larger regardless.
+  const cap = Number(currentRound?.max_autoplay_rounds) || 100;
+  const counts = [5, 10, 25, 50].filter((n) => n < cap);
+  if (!counts.includes(cap)) counts.push(cap);
+  if (!counts.includes(autoplayRoundsSelection)) autoplayRoundsSelection = counts.includes(10) ? 10 : counts[0];
+  const options = [...counts.map((n) => [String(n), n]), [t("keno.autoplay_no_limit"), null]];
   for (const [label, value] of options) {
     const chip = document.createElement("button");
     chip.type = "button";
@@ -730,9 +736,16 @@ function renderStakeChips() {
     });
     container.appendChild(chip);
   }
+  // A stake the operator turned off since it was picked is no longer
+  // offered: drop it rather than send a ticket the server will refuse.
+  if (selectedStake !== null && !currentRound.stake_options.includes(selectedStake)) selectedStake = null;
   if (selectedStake === null && currentRound.stake_options.length > 0) {
-    selectedStake = currentRound.stake_options[0];
-    container.firstChild.classList.add("selected");
+    const preferred = currentRound.default_stake;
+    selectedStake = preferred && currentRound.stake_options.includes(preferred)
+      ? preferred
+      : currentRound.stake_options[0];
+    const index = currentRound.stake_options.indexOf(selectedStake);
+    container.children[index].classList.add("selected");
   }
 }
 
@@ -923,8 +936,21 @@ function showResult(roundId, settled) {
     (sum, r) => sum + Number(r.payout || 0) + Number(r.jackpot_payout || 0),
     0
   );
-  const won = totalPayout > 0;
+  // What these tickets cost: the server now sends each ticket's stake with
+  // its settlement; older frames fall back to the ticket we placed locally.
+  const placed = roundTickets.get(roundId)?.tickets || [];
+  const totalStake = settled.reduce((sum, r) => {
+    const stake = r.stake ?? placed.find((tk) => tk.id === r.ticket_id)?.stake;
+    return sum + Number(stake || 0);
+  }, 0);
+  const net = totalPayout - totalStake;
   const jackpotHit = settled.some((r) => r.jackpot_payout && Number(r.jackpot_payout) > 0);
+  // Only a real profit is celebrated. A payout that doesn't cover the stake
+  // is shown as money returned -- no confetti, no win sound or haptic --
+  // so a loss never dresses up as a win. If the stake isn't known at all,
+  // err toward not celebrating.
+  const won = jackpotHit || (totalPayout > 0 && totalStake > 0 && net > 0);
+  const partialReturn = !won && totalPayout > 0;
 
   showKenoScreen("keno-result");
   el("keno-result-confetti").innerHTML = "";
@@ -938,6 +964,11 @@ function showResult(roundId, settled) {
     amountEl.classList.add("win");
     spawnConfetti();
     haptics.success();
+  } else if (partialReturn) {
+    titleEl.textContent = t("keno.result.returned_title");
+    titleEl.classList.remove("win");
+    amountEl.textContent = t("keno.result.returned_amount", { amount: totalPayout.toFixed(2) });
+    amountEl.classList.remove("win");
   } else {
     titleEl.textContent = t("keno.result.lose_title");
     titleEl.classList.remove("win");
@@ -945,6 +976,10 @@ function showResult(roundId, settled) {
     amountEl.classList.remove("win");
   }
   const metaParts = settled.map((r) => t("keno.result.ticket_line", { matches: r.matches, amount: r.payout }));
+  if (totalStake > 0 && totalPayout > 0) {
+    const sign = net > 0 ? "+" : net < 0 ? "−" : "";
+    metaParts.push(t("keno.result.net_line", { net: `${sign}${Math.abs(net).toFixed(2)}` }));
+  }
   el("keno-result-meta").textContent = metaParts.join(" · ");
   // The round passed in explicitly, not currentRound.round_id: see
   // roundTickets' own comment above -- by the time this settlement

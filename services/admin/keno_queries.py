@@ -175,8 +175,8 @@ def _coerce_config_value(field: str, value: Any) -> Any:
         decimal_value = Decimal(str(value))
     except InvalidOperation as exc:
         raise InvalidKenoConfig(f"{field} must be a number") from exc
-    if not decimal_value.is_finite():
-        raise InvalidKenoConfig(f"{field} must be a number")
+    if not decimal_value.is_finite() or abs(decimal_value) > Decimal("1e15"):
+        raise InvalidKenoConfig(f"{field} must be a usable number")
     return decimal_value
 
 
@@ -206,7 +206,7 @@ def validate_config_values(values: dict[str, Any]) -> None:
     if not Decimal("1") <= multiple <= Decimal("50"):
         raise InvalidKenoConfig("daily_payout_circuit_breaker_multiple must be between 1 and 50")
     floor = Decimal(values["reserve_withdrawal_floor"])
-    if floor < 0 or floor != floor.quantize(Decimal("0.01")):
+    if floor < 0 or floor > Decimal("1e15") or floor != floor.quantize(Decimal("0.01")):
         raise InvalidKenoConfig("reserve_withdrawal_floor must be zero or more, in whole cents")
 
 
@@ -615,7 +615,10 @@ def _money(field: str, value: Any, *, allow_zero: bool = False) -> Decimal:
         amount = Decimal(str(value))
     except InvalidOperation as exc:
         raise InvalidKenoConfig(f"{field} must be an amount in ETB") from exc
-    if not amount.is_finite() or amount != amount.quantize(_CENT):
+    if not amount.is_finite() or abs(amount) > Decimal("1e15"):
+        # Checked before quantize(), which raises on huge exponents.
+        raise InvalidKenoConfig(f"{field} is not a usable amount, got {value}")
+    if amount != amount.quantize(_CENT):
         raise InvalidKenoConfig(f"{field} must be an amount in whole cents, got {value}")
     if amount < 0 or (amount == 0 and not allow_zero):
         raise InvalidKenoConfig(f"{field} must be more than zero, got {value}")

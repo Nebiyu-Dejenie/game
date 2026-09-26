@@ -94,6 +94,7 @@
   "wallet.error.invalid_amount": "እባክዎ ትክክለኛ መጠን ያስገቡ።",
   "wallet.error.rate_limited": "በጣም ብዙ የገቢ ሙከራዎች። እባክዎ ትንሽ ቆይተው እንደገና ይሞክሩ።",
   "wallet.error.below_minimum": "ይህ ከዝቅተኛው መጠን በታች ነው።",
+  "wallet.error.below_minimum_amount": "ይህ ከዝቅተኛው {min} ብር በታች ነው።",
   "wallet.error.daily_cap_exceeded": "የዛሬውን የገቢ ገደብ ደርሰዋል።",
   "wallet.error.self_excluded": "አካውንትዎ በራስ-ገደብ ላይ ነው።",
   "wallet.error.cooling_off": "አሁን በእረፍት ጊዜ ላይ ነዎት።",
@@ -264,6 +265,9 @@
   "keno.result.lose_title": "በዚህ ዙር አላሸነፉም",
   "keno.result.no_win": "0.00 ብር",
   "keno.result.ticket_line": "{matches} ተመሳስለዋል — {amount} ብር",
+  "keno.result.returned_title": "ከውርርድዎ ከፊሉ ተመልሷል",
+  "keno.result.returned_amount": "{amount} ብር ተመልሷል",
+  "keno.result.net_line": "በዚህ ዙር የተጣራ፦ {net} ብር",
 
   "keno.paytable_match_row": "ከ{picks} ውስጥ {matches} ተመሳስለዋል",
 

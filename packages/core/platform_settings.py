@@ -180,7 +180,12 @@ def coerce(key: str, raw: Any) -> Decimal | int:
             amount = Decimal(str(raw).strip())
         except InvalidOperation as exc:
             raise InvalidSetting(f"{definition.label} must be an amount in ETB") from exc
-        if not amount.is_finite() or amount != amount.quantize(Decimal("0.01")):
+        if not amount.is_finite() or abs(amount) > definition.maximum * 10:
+            # Checked before quantize(), which raises on huge exponents.
+            raise InvalidSetting(
+                f"{definition.label} must be between {definition.minimum} and {definition.maximum} {definition.unit}"
+            )
+        if amount != amount.quantize(Decimal("0.01")):
             raise InvalidSetting(f"{definition.label} must be an amount in whole cents")
         value = amount.quantize(Decimal("0.01"))
     if not definition.minimum <= Decimal(value) <= definition.maximum:
