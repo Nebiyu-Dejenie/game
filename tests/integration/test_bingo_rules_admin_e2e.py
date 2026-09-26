@@ -12,7 +12,7 @@ import pytest
 
 from tests.integration.conftest import create_room
 from tests.integration.test_admin_auth import create_test_admin
-from tests.integration.test_admin_console_e2e import _login
+from tests.integration.test_admin_console_e2e import _login, fill_confirm_dialog
 
 pytestmark = pytest.mark.e2e
 
@@ -86,6 +86,7 @@ async def test_edit_room_preserves_and_updates_the_winning_condition(
 
     await page.fill('#edit-room-form [name="min_winning_lines"]', "3")
     await page.click('#edit-room-form button[type="submit"]')
+    await fill_confirm_dialog(page, "e2e test: switching this room's rule")
 
     await page.wait_for_selector("#edit-room-form", state="detached", timeout=10000)
 

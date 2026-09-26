@@ -1008,7 +1008,9 @@ async def test_update_room_admin_audit_log_stores_win_patterns_as_a_real_array(p
         pool,
         admin_id=admin_id,
         room_id=room_id,
-        changes={"win_patterns": ["row", "column", "diagonal"]},
+        # The engine's own pattern kinds (packages/core/bingo.py); update_room_admin
+        # refuses names it doesn't know, which would otherwise never win.
+        changes={"win_patterns": ["row", "col", "diag"]},
         reason="enabling more win patterns",
         ip_address="127.0.0.1",
     )
@@ -1026,7 +1028,7 @@ async def test_update_room_admin_audit_log_stores_win_patterns_as_a_real_array(p
     # double-encoded bug), an admin (or this assertion) would need to
     # decode it a second time to get anything useful out of it.
     assert before["win_patterns"] == ["row"]
-    assert after["win_patterns"] == ["row", "column", "diagonal"]
+    assert after["win_patterns"] == ["row", "col", "diag"]
 
 
 async def test_dashboard_summary_reflects_real_state(pool, redis, card_pool, conn):

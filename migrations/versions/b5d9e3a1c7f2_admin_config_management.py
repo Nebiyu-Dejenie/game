@@ -15,6 +15,11 @@ developer (SQL or a redeploy), not from the admin console:
   merely rejected by the API: every stake positive, the default one of
   the enabled stakes, and no stake both enabled and disabled.
 
+- NaN guards: Postgres treats 'NaN'::numeric as greater than every
+  number, so CHECK (stake > 0) and 0 < ALL(stake_options) both accept a
+  NaN stake. rooms.stake and the Keno stake columns now refuse NaN
+  explicitly.
+
 - keno_configs.max_autoplay_rounds: the per-session round cap was a
   module constant (packages/core/keno_autoplay.py MAX_ROUNDS_TOTAL = 100).
   That constant stays as the hard ceiling; the operator can now lower
@@ -56,9 +61,14 @@ def upgrade() -> None:
           ADD CONSTRAINT chk_keno_risk_tiers_default_stake_enabled
             CHECK (default_stake IS NULL OR default_stake = ANY (stake_options)),
           ADD CONSTRAINT chk_keno_risk_tiers_stakes_disjoint
-            CHECK (NOT (stake_options && disabled_stake_options));
+            CHECK (NOT (stake_options && disabled_stake_options)),
+          ADD CONSTRAINT chk_keno_risk_tiers_stakes_not_nan
+            CHECK (NOT ('NaN'::numeric = ANY (stake_options))
+                   AND NOT ('NaN'::numeric = ANY (disabled_stake_options))
+                   AND (default_stake IS NULL OR default_stake <> 'NaN'::numeric));
         """
     )
+    op.execute("ALTER TABLE rooms ADD CONSTRAINT chk_rooms_stake_not_nan CHECK (stake <> 'NaN'::numeric)")
     op.execute(
         """
         ALTER TABLE keno_configs
@@ -80,10 +90,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP TABLE platform_settings")
+    op.execute("ALTER TABLE rooms DROP CONSTRAINT chk_rooms_stake_not_nan")
     op.execute("ALTER TABLE keno_configs DROP COLUMN max_autoplay_rounds")
     op.execute(
         """
         ALTER TABLE keno_risk_tiers
+          DROP CONSTRAINT chk_keno_risk_tiers_stakes_not_nan,
           DROP CONSTRAINT chk_keno_risk_tiers_stakes_disjoint,
           DROP CONSTRAINT chk_keno_risk_tiers_default_stake_enabled,
           DROP CONSTRAINT chk_keno_risk_tiers_disabled_stakes_positive,

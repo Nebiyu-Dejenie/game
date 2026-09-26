@@ -801,6 +801,10 @@ async def update_room(
     room_id: int,
     body: UpdateRoomRequest,
 ) -> dict[str, bool]:
+    # A room edit changes what every player in that room pays or can win
+    # (stake, house cut) or whether it runs at all -- same reason rule as
+    # every other configuration change.
+    _require_reason(body.reason or "")
     try:
         updated = await queries.update_room_admin(
             app.state.pool,

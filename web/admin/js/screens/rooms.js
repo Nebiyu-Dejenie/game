@@ -1,5 +1,5 @@
 import { api, escapeHtml } from "../api.js";
-import { renderError, toast } from "../ui.js";
+import { confirmChanges, renderError, toast } from "../ui.js";
 
 export const label = "Rooms";
 
@@ -294,10 +294,27 @@ export async function render(container) {
       toast("Nothing changed.");
       return;
     }
-    const reason = window.prompt(`Reason for editing room #${roomId}:`);
-    if (reason === null) return;
+    const FIELD_LABELS = {
+      stake: "Stake (ETB)", house_cut_bps: "House cut (bps)", min_players: "Min players",
+      max_players: "Max players", max_cards_per_player: "Max cards per player", lobby_seconds: "Lobby seconds",
+      call_interval_ms: "Call interval (ms)", result_seconds: "Result seconds", win_patterns: "Line types",
+      min_winning_lines: "Required winning lines",
+    };
+    const reason = await confirmChanges({
+      title: `Edit room #${roomId} (${room.code})`,
+      intro: "Takes effect the next time the engine picks this room up; a round in progress keeps its stake.",
+      changes: Object.entries(changes).map(([field, after]) => ({
+        label: FIELD_LABELS[field] || field,
+        before: Array.isArray(room[field]) ? room[field].join(", ") : String(room[field]),
+        after: Array.isArray(after) ? after.join(", ") : String(after),
+        danger: field === "house_cut_bps" || field === "stake",
+        note: field === "stake" ? "Changes what every player in this room pays per card."
+          : field === "house_cut_bps" ? "Changes how much of every pot the house keeps." : undefined,
+      })),
+    });
+    if (!reason) return;
     try {
-      await api(`/rooms/${roomId}`, { method: "PATCH", body: { changes, reason: reason || null } });
+      await api(`/rooms/${roomId}`, { method: "PATCH", body: { changes, reason } });
       toast("Room updated.");
       reload();
     } catch (err) {
@@ -306,12 +323,20 @@ export async function render(container) {
   }
 
   async function toggleActive(roomId, currentlyActive) {
-    const reason = window.prompt(`Reason to ${currentlyActive ? "deactivate" : "activate"} room #${roomId}:`);
-    if (reason === null) return;
+    const reason = await confirmChanges({
+      title: `${currentlyActive ? "Deactivate" : "Activate"} room #${roomId}`,
+      intro: currentlyActive
+        ? "The room stops starting new rounds. A round already running finishes normally."
+        : "The room becomes available to players again.",
+      changes: [{ label: "Active", before: currentlyActive ? "Yes" : "No", after: currentlyActive ? "No" : "Yes" }],
+      confirmLabel: currentlyActive ? "Deactivate" : "Activate",
+      danger: currentlyActive,
+    });
+    if (!reason) return;
     try {
       await api(`/rooms/${roomId}`, {
         method: "PATCH",
-        body: { changes: { is_active: !currentlyActive }, reason: reason || null },
+        body: { changes: { is_active: !currentlyActive }, reason },
       });
       toast("Room updated.");
       reload();

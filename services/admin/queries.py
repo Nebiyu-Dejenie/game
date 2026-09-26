@@ -830,6 +830,75 @@ def _validate_min_winning_lines(value: int) -> None:
         )
 
 
+MAX_ROOM_STAKE = Decimal("100000.00")
+
+
+def _validate_room_values(values: dict[str, Any], *, only: set[str] | None = None) -> None:
+    """Checks a complete room row (a create, or a row with an edit merged
+    in). Raises ValueError, which the routes turn into a 422. The DB
+    CHECKs stay as the backstop, but two things they can't catch are
+    caught here: Postgres treats 'NaN'::numeric as greater than every
+    number, so a NaN stake satisfies CHECK (stake > 0); and numeric(18,2)
+    silently rounds a sub-cent stake (10.005 -> 10.01) instead of refusing it.
+
+    `only` limits the per-field checks to the fields an edit touches, so a
+    row created under older, looser rules can still be edited in other
+    ways; cross-field rules apply whenever one of their fields changed."""
+
+    def _checking(*fields: str) -> bool:
+        return only is None or any(f in only for f in fields)
+
+    stake = values["stake"]
+    if _checking("stake"):
+        if not isinstance(stake, Decimal) or not stake.is_finite():
+            raise ValueError("stake must be an amount in ETB")
+        if not Decimal("0") < stake <= MAX_ROOM_STAKE:
+            raise ValueError(f"stake must be more than 0 and at most {MAX_ROOM_STAKE} ETB")
+        if stake != stake.quantize(Decimal("0.01")):
+            raise ValueError("stake must be an amount in whole cents")
+
+    def _int(field: str, low: int, high: int) -> int:
+        value = values[field]
+        if not _checking(field):
+            return int(value)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{field} must be a whole number")
+        if not low <= value <= high:
+            raise ValueError(f"{field} must be between {low} and {high}, got {value}")
+        return value
+
+    _int("house_cut_bps", 0, 10000)
+    min_players = _int("min_players", 1, 432)
+    max_players = _int("max_players", 1, 432)
+    if _checking("min_players", "max_players") and min_players > max_players:
+        raise ValueError("min_players cannot be greater than max_players")
+    _int("max_cards_per_player", 1, 20)
+    _int("lobby_seconds", 1, 3600)
+    _int("call_interval_ms", 200, 60000)
+    _int("result_seconds", 0, 600)
+    _int("no_player_next_round_delay_seconds", 0, 300)
+    if _checking("min_winning_lines"):
+        _validate_min_winning_lines(values["min_winning_lines"])
+    patterns = values["win_patterns"]
+    if isinstance(patterns, str):
+        patterns = json.loads(patterns)
+    if _checking("win_patterns") and (not patterns or not set(patterns) <= set(bingo_win_patterns())):
+        raise ValueError(f"win_patterns must be a non-empty subset of {sorted(bingo_win_patterns())}")
+
+
+def bingo_win_patterns() -> tuple[str, ...]:
+    # The shapes the rooms admin form offers (web/admin/js/screens/rooms.js
+    # WIN_PATTERNS); "corners" was removed by migration b31c5f70f957.
+    return ("row", "col", "diag")
+
+
+def _parse_stake(raw: Any) -> Decimal:
+    try:
+        return Decimal(str(raw).strip())
+    except InvalidOperation as exc:
+        raise ValueError("stake must be a decimal number") from exc
+
+
 async def create_room_admin(
     pool: asyncpg.Pool,
     *,
@@ -852,7 +921,15 @@ async def create_room_admin(
     # other admin-console validation error already uses) instead of a raw
     # constraint-violation error -- the DB CHECK stays too, as the real,
     # unconditional backstop for any caller that skips this function.
-    _validate_min_winning_lines(min_winning_lines)
+    _validate_room_values({
+        "stake": stake, "house_cut_bps": house_cut_bps, "min_players": min_players,
+        "max_players": max_players, "max_cards_per_player": max_cards_per_player,
+        "lobby_seconds": lobby_seconds, "call_interval_ms": call_interval_ms,
+        "result_seconds": result_seconds, "no_player_next_round_delay_seconds": 5,
+        "min_winning_lines": min_winning_lines, "win_patterns": win_patterns,
+    })
+    if not code.strip():
+        raise ValueError("code is required")
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
@@ -953,8 +1030,6 @@ async def update_room_admin(
         raise ValueError(f"not an editable room field: {unknown}")
     if not changes:
         return False
-    if "min_winning_lines" in changes:
-        _validate_min_winning_lines(changes["min_winning_lines"])
     if "stake" in changes:
         # The edit form sends this as a plain string (FormData, not a
         # typed number input) -- caught here, before it ever reaches the
@@ -966,16 +1041,17 @@ async def update_room_admin(
         # field, a stray space, a comma instead of a decimal point)
         # would otherwise surface as an opaque 500 instead of a clean,
         # actionable validation error.
-        try:
-            changes["stake"] = Decimal(str(changes["stake"]))
-        except InvalidOperation as exc:
-            raise ValueError("stake must be a decimal number") from exc
+        changes["stake"] = _parse_stake(changes["stake"])
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            before = await conn.fetchrow("SELECT * FROM rooms WHERE id = $1", room_id)
+            before = await conn.fetchrow("SELECT * FROM rooms WHERE id = $1 FOR UPDATE", room_id)
             if before is None:
                 return False
+            # The whole row as it would be after this edit, so a change
+            # that's only invalid in combination (min_players above the
+            # existing max_players) is refused too.
+            _validate_room_values({**dict(before), **changes}, only=set(changes))
 
             set_clauses = []
             values: list[Any] = []

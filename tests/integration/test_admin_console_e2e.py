@@ -38,6 +38,16 @@ async def _login(page, admin_server: str, username: str, password: str, totp_sec
     await page.click('button[type="submit"]')
 
 
+async def fill_confirm_dialog(page, reason: str) -> None:
+    """The console's shared configuration confirm dialog (ui.js
+    confirmChanges): fill the mandatory reason and confirm."""
+    dialog = page.locator("dialog.confirm-dialog")
+    await dialog.wait_for(state="visible", timeout=5000)
+    await dialog.locator("textarea").fill(reason)
+    await dialog.locator("[data-confirm]").click()
+    await dialog.wait_for(state="detached", timeout=5000)
+
+
 async def test_admin_console_login_and_dashboard_load(admin_server, pool, browser):
     admin_id, username, password, totp_secret = await create_test_admin(pool, role="superadmin")
 
@@ -205,6 +215,7 @@ async def test_admin_console_rooms_edit_changes_a_real_room_over_a_real_browser(
     await stake_input.fill("")
     await stake_input.fill("25.00")
     await page.click('#edit-room-form button[type="submit"]')
+    await fill_confirm_dialog(page, "e2e test: correcting the stake")
 
     await page.wait_for_selector("#toast.visible", timeout=5000)
     await page.wait_for_function(

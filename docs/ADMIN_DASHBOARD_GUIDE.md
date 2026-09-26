@@ -41,6 +41,13 @@ production host via an SSH tunnel still works too, unchanged.
 | Risk | risk/fraud signals | **ops + finance + superadmin only** |
 | Audit Log | `GET /audit-log`, filterable by `admin_id`/`action` | **superadmin only** |
 | Admin Users | `GET/POST /admin-users`, `PATCH .../active`, `PATCH .../role`, `POST .../reset-password` | **superadmin only** — see below |
+| Platform settings | `GET/PATCH /settings`, `POST /settings/{key}/reset` | finance + ops + superadmin can view (`settings:view`); changing is **superadmin only** (`settings:manage`) — see "Configuration" below |
+| Change history | `GET /config-history?scope=` | finance + ops + superadmin (`settings:view`) |
+
+The nav is grouped (Operations, Players, Finance, Risk & reports, Content,
+Configuration, Staff & audit). On a phone it collapses behind a menu
+button. Keno has its own tabs: Overview (kill switch, reserve), **Rules**,
+Rounds, Paytables, **Stakes, tiers & access**, Risk simulator, Reports.
 
 The nav-visibility list (`SCREEN_VIEW_ROLES` in `app.js`) is a courtesy —
 its own comment says so directly: "the backend remains the sole real
@@ -176,3 +183,53 @@ writes a balance directly either; every money-moving admin action
 (approve a manual deposit/withdrawal, resolve payment evidence) goes
 through `packages/core/ledger.post()`, the exact same entry point every
 other payment rail uses.
+
+
+## Configuration — changing the rules without a developer
+
+Every change below goes through the same confirm dialog: it lists each
+field's old and new value, flags the direction of a change that loosens a
+control (e.g. raising the auto-approve threshold, shortening the
+responsible-gaming delay, lowering the Keno reserve floor), and requires a
+written reason of at least 10 characters. The reason, the admin, the time
+and the before/after values land in the immutable audit log and show up in
+**Change history**. The backend validates every value again, whatever the
+browser sends.
+
+**Platform settings** (Configuration → Platform settings). Minimum
+deposit, platform daily deposit cap, minimum withdrawal, auto-approve /
+two-person threshold, KYC threshold, deposit hold before withdrawal,
+withdrawals per player per day, and the responsible-gaming limit-increase
+delay and minimum self-exclusion. Each shows its effective value, default,
+allowed range and who last changed it. A change applies to the next
+deposit, withdrawal or limit change. "Reset to default" removes an
+override. The two responsible-gaming settings can be made stricter, never
+weaker than 24 hours / 180 days. The daily cap can't be set below the
+minimum deposit.
+
+**Keno rules** (Keno → Rules, superadmin). Betting window, draw length,
+result display (the round length is worked out from these three), minimum
+and maximum picks, tickets per player per round, one player's share of a
+round, maximum autoplay rounds, jackpot diversion, reserve withdrawal
+floor, payout circuit breaker, the RTP guardrail band, and whether only
+allowlisted players can play. Saving creates a new version used from the
+next round; a round in progress keeps its rules. Keno on/off stays on the
+Overview tab's kill switch, which now keeps every other setting as it was.
+The RTP band can't be narrowed past a live paytable — change the paytable
+first.
+
+**Stakes** (Keno → Stakes, tiers & access → "Edit stakes & limits",
+superadmin). For each tier: add a stake, remove one, turn one off (kept on
+the list, refused for new tickets) or back on, reorder them (the order is
+the chip order players see), and choose the default the Mini App
+preselects. Tier limits (minimum reserve, maximum picks, top multiplier
+cap, maximum win per ticket, round exposure cap, paytable profile) are on
+the same form. Tick "Use this from the next round" when editing the tier in
+play. Refused: no enabled stake, duplicates, amounts that aren't whole
+cents, more than 12 stakes, a default that isn't enabled, a maximum win
+smaller than the largest stake, a missing paytable for an allowed pick
+count, or a live paytable above the top multiplier cap. A stake that's
+turned off is refused by the server even if someone sends it by hand.
+
+**Bingo stakes** are per room (Operations → Rooms): one stake per room,
+edited with the room.
