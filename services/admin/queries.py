@@ -26,6 +26,7 @@ from packages.core.phone_crypto import decrypt_phone, phone_lookup_hash
 from packages.core.referrals import maybe_grant_referral_bonus, maybe_grant_welcome_bonus
 from services.admin import audit, auth, rbac
 from services.engine.refunds import TERMINAL_STATUSES, refund_round_in_transaction
+from services.payments.payout_settlement import mark_payout_failed, mark_payout_paid
 from services.payments.withdrawals import enqueue_payout
 
 
@@ -1850,38 +1851,100 @@ async def list_pending_withdrawals(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-async def list_stuck_processing_payouts(
-    pool: asyncpg.Pool, *, older_than_seconds: int = 3600
-) -> list[dict[str, Any]]:
-    """Withdrawals still sitting at status='processing' longer than
-    expected -- Chapa accepted the transfer request but this codebase has
-    no payout webhook route or status-polling fallback to ever learn what
-    actually happened to it (see services/payments/payout_worker.py's own
-    module docstring). A code review pass caught the worker previously
-    treating "processing" as fully settled, a real silent-money-loss risk
-    if a transfer Chapa accepted was later actually rejected on their
-    side; the fix leaves it genuinely unresolved instead of guessing, but
-    "genuinely unresolved with no way to ever find out" is only an
-    improvement if something actually surfaces it. This is that surface
-    -- a real automated resolution remains blocked on confirming Chapa's
-    transfer-status response vocabulary (see DECISIONS.md), so for now
-    this is read-only: an admin who sees an entry here needs to check the
-    transfer's real status directly with Chapa and resolve it manually
-    (payments.status is not itself constrained to only 'succeeded'/
-    'failed' by anything that would block a direct correction).
+# A payout can't be resolved by an admin until it has sat at 'processing'
+# this long: the worker's own call to Chapa (seconds) is long over, so an
+# admin can't mark failed a payout Chapa is about to confirm as paid.
+PAYOUT_RESOLVE_MIN_AGE_SECONDS = 600
+
+
+async def list_payouts_awaiting_reconciliation(pool: asyncpg.Pool) -> list[dict[str, Any]]:
+    """Every automatic payout sitting at 'processing' (manual-rail payouts
+    have their own settle/fail screen), oldest first. Two kinds end up here
+    (operator decision, 2026-09-26): Chapa accepted the transfer but never
+    confirmed it (there is no payout webhook or status poll yet), or the
+    worker couldn't tell whether its request reached Chapa at all (an
+    exception, a crash mid-call, a redelivered job). The worker never
+    resends either kind, so without this view they'd sit silently with the
+    player's funds locked. `resolvable` is false until the payout has been
+    quiet for PAYOUT_RESOLVE_MIN_AGE_SECONDS.
     """
     rows = await pool.fetch(
         """
-        SELECT p.id, p.user_id, u.display_name, p.our_ref, p.amount, p.provider_ref, p.updated_at
+        SELECT p.id, p.user_id, u.display_name, p.our_ref, p.amount, p.provider, p.provider_ref,
+               p.failure_reason, p.created_at, p.updated_at,
+               p.updated_at < now() - make_interval(secs => $1) AS resolvable
         FROM payments p
         JOIN users u ON u.id = p.user_id
-        WHERE p.direction = 'out' AND p.status = 'processing'
-          AND p.updated_at < now() - make_interval(secs => $1)
+        WHERE p.direction = 'out' AND p.status = 'processing' AND p.provider <> 'manual'
         ORDER BY p.updated_at
         """,
-        older_than_seconds,
+        PAYOUT_RESOLVE_MIN_AGE_SECONDS,
     )
     return [dict(r) for r in rows]
+
+
+class PayoutNotResolvable(Exception):
+    """Not a payout at 'processing', a manual-rail one, or one that hasn't
+    been quiet for PAYOUT_RESOLVE_MIN_AGE_SECONDS yet."""
+
+
+async def resolve_payout_admin(
+    pool: asyncpg.Pool,
+    redis: Redis,
+    *,
+    admin_id: int,
+    payment_id: int,
+    outcome: Literal["paid", "failed"],
+    provider_ref: str | None,
+    reason: str,
+    ip_address: str | None,
+) -> None:
+    """An admin, having checked the transfer in Chapa's dashboard, records
+    what really happened: 'paid' moves the locked amount to
+    provider_settlement, 'failed' returns it to the player's cash. Same
+    settlement functions and ledger keys as the payout worker, so the two
+    can never both resolve one payout. Raises PayoutNotResolvable instead
+    of guessing."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT user_id, amount, our_ref, status, provider, provider_ref, "
+                "updated_at < now() - make_interval(secs => $2) AS quiet "
+                "FROM payments WHERE id = $1 AND direction = 'out' FOR UPDATE",
+                payment_id,
+                PAYOUT_RESOLVE_MIN_AGE_SECONDS,
+            )
+            if row is None or row["status"] != "processing" or row["provider"] == "manual":
+                raise PayoutNotResolvable("not an automatic payout awaiting reconciliation")
+            if not row["quiet"]:
+                raise PayoutNotResolvable(
+                    f"wait until it has been processing for {PAYOUT_RESOLVE_MIN_AGE_SECONDS // 60} minutes"
+                )
+            if outcome == "paid":
+                txn = await mark_payout_paid(conn, payment_id=payment_id, provider_ref=provider_ref)
+            else:
+                txn = await mark_payout_failed(conn, payment_id=payment_id, reason=f"resolved by admin: {reason}")
+            assert txn is not None  # the row lock and status check above guarantee it
+            await audit.record(
+                conn,
+                admin_id=admin_id,
+                action=f"payouts.resolve_{outcome}",
+                target_type="payment",
+                target_id=str(payment_id),
+                before={"status": "processing", "provider_ref": row["provider_ref"]},
+                after={"status": "succeeded" if outcome == "paid" else "failed",
+                       "provider_ref": provider_ref or row["provider_ref"]},
+                reason=reason,
+                ip_address=ip_address,
+            )
+    metrics.ledger_transactions_total.labels(kind=txn.kind).inc()
+    user_id = row["user_id"]
+    await ledger.publish_balance_update(pool, redis, user_id)
+    await notify_user(
+        pool, redis, user_id=user_id,
+        key="notify.withdrawal_succeeded" if outcome == "paid" else "notify.withdrawal_failed",
+        amount=str(row["amount"]),
+    )
 
 
 async def approve_withdrawal_admin(

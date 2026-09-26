@@ -8,14 +8,21 @@ whichever consumer originally owned it once it's been idle too long; a
 real gap a code review pass caught, since the original crash-recovery
 check only ever looked at the *current* consumer's own pending list).
 
-Exactly-once semantics for the *provider* call are the provider's job, not
-ours: our_ref is passed as Chapa's own idempotency reference (spec:
-"the provider is called exactly once (via our_ref idempotency)"), so it is
-safe -- not just tolerated -- for this worker to call create_payout() again
-after a crash-and-redeliver. What this module guarantees on its own side is
-that a payment already in a terminal state (succeeded/failed) is never
-touched twice, and that the ledger settlement itself is idempotent via
-ledger.post()'s idempotency_key.
+A payout is sent to the provider at most once (operator decision,
+2026-09-26). Only an 'approved' payment is ever dispatched. One that is
+already 'processing' when its stream entry arrives (a crash after the
+provider call, a duplicate enqueue) is never sent again: whether the first
+send reached Chapa is unknown, and this code no longer relies on Chapa
+deduplicating a repeated our_ref. It used to, and if Chapa instead rejected
+the repeat, the worker refunded a transfer that had already gone out. The
+same rule covers any exception from create_payout(), a timeout included:
+the outcome is unknown, so the payment stays 'processing' with no refund,
+and an admin resolves it from the reconciliation view
+(services/admin/queries.py list_payouts_awaiting_reconciliation /
+resolve_payout_admin). Locked funds an admin can resolve beat paying twice.
+Settlement itself goes through services/payments/payout_settlement.py,
+shared with those admin actions, so the worker and an admin can never both
+resolve one payout.
 
 A provider result of "processing" (Chapa merely *accepted* the transfer
 request, with no confirmation it actually completed) is deliberately never
@@ -27,7 +34,7 @@ learn a "processing" transfer later actually failed; wrongly marking it
 succeeded here would be a silent, permanent, unrecoverable loss with no
 signal anywhere. A payment left at status='processing' is a real,
 currently-unresolved gap in this module's coverage, not a bug being
-papered over -- see withdrawals.list_stuck_processing_payouts() for the
+papered over -- see the admin reconciliation view above for the
 operator-visibility this converts it into, and DECISIONS.md for why a full
 automated fix remains blocked on Chapa's transfer-status response
 vocabulary rather than guessed at.
@@ -58,6 +65,7 @@ from services.payments.chapa import ChapaProvider
 from services.payments.deposits import poll_pending_deposits, run_provider_reconciliation
 from services.payments.device_registry import check_for_degraded_devices
 from services.payments.ledger_reconcile_sweep import sweep_ledger_reconciliation
+from services.payments.payout_settlement import mark_payout_failed, mark_payout_paid
 from services.payments.telebirr_reconcile import run_telebirr_reconciliation
 from services.payments.provider import PaymentProvider
 from services.payments.withdrawals import PAYOUT_STREAM, sweep_stuck_approved_payouts
@@ -90,7 +98,8 @@ async def ensure_group(redis: Redis) -> None:
 async def process_one(
     pool: asyncpg.Pool, redis: Redis, provider: PaymentProvider, *, msg_id: str, our_ref: str
 ) -> str:
-    """Returns 'succeeded' | 'failed' | 'processing' | 'skipped'. Always
+    """Returns 'succeeded' | 'failed' | 'processing' | 'awaiting_reconciliation'
+    | 'skipped'. Always
     acks -- the only way a job is left unacked (and therefore
     redelivered) is this process dying mid-call, which is exactly the
     crash-recovery case the spec asks to be tested.
@@ -130,11 +139,19 @@ async def process_one(
                     span.set_attribute("payout.outcome", "skipped")
                     return "skipped"
 
-                if payment["status"] == "approved":
-                    await conn.execute(
-                        "UPDATE payments SET status = 'processing', updated_at = now() WHERE id = $1",
-                        payment["id"],
-                    )
+                if payment["status"] == "processing":
+                    # Already sent, or possibly sent: never send it again.
+                    # See this module's docstring.
+                    logger.warning("payout_redelivered_while_processing", our_ref=our_ref)
+                    metrics.payouts_awaiting_reconciliation_total.labels(cause="redelivered").inc()
+                    await redis.xack(PAYOUT_STREAM, GROUP, msg_id)
+                    span.set_attribute("payout.outcome", "awaiting_reconciliation")
+                    return "awaiting_reconciliation"
+
+                await conn.execute(
+                    "UPDATE payments SET status = 'processing', updated_at = now() WHERE id = $1",
+                    payment["id"],
+                )
 
                 payment_id = payment["id"]
                 user_id = payment["user_id"]
@@ -157,25 +174,34 @@ async def process_one(
                 provider_span.set_attribute("provider.name", provider.name)
                 result = await provider.create_payout(method=method_payload, amount=amount, our_ref=our_ref)
         except Exception as exc:
-            logger.error("payout_provider_error", our_ref=our_ref, error=str(exc))
-            await _reverse(pool, payment_id=payment_id, user_id=user_id, amount=amount, our_ref=our_ref, reason=str(exc))
-            await ledger.publish_balance_update(pool, redis, user_id)
-            await notify_user(pool, redis, user_id=user_id, key="notify.withdrawal_failed", amount=str(amount))
+            # The request may or may not have reached Chapa (a timeout after
+            # sending looks exactly like a failure to connect), so this is an
+            # unknown outcome, not a failure: no refund, the funds stay
+            # locked, and the payout waits for an admin.
+            logger.error("payout_outcome_unknown", our_ref=our_ref, error=str(exc))
+            metrics.payouts_awaiting_reconciliation_total.labels(cause="provider_error").inc()
+            await pool.execute(
+                "UPDATE payments SET failure_reason = $2, updated_at = now() WHERE id = $1 AND status = 'processing'",
+                payment_id,
+                f"outcome unknown: {exc}"[:500],
+            )
             await redis.xack(PAYOUT_STREAM, GROUP, msg_id)
-            span.set_attribute("payout.outcome", "failed")
-            return "failed"
+            span.set_attribute("payout.outcome", "awaiting_reconciliation")
+            return "awaiting_reconciliation"
 
         if result.status == "succeeded":
-            await _settle_success(
-                pool,
-                payment_id=payment_id,
-                user_id=user_id,
-                amount=amount,
-                our_ref=our_ref,
-                provider_ref=result.provider_ref,
-            )
-            await ledger.publish_balance_update(pool, redis, user_id)
-            await notify_user(pool, redis, user_id=user_id, key="notify.withdrawal_succeeded", amount=str(amount))
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    txn = await mark_payout_paid(conn, payment_id=payment_id, provider_ref=result.provider_ref)
+            if txn is None:
+                # Resolved by an admin while this call was in flight. If they
+                # marked it failed and refunded it, the player now has the
+                # money twice; that needs a person, now.
+                logger.error("payout_succeeded_after_admin_resolution", our_ref=our_ref, provider_ref=result.provider_ref)
+            else:
+                metrics.ledger_transactions_total.labels(kind=txn.kind).inc()
+                await ledger.publish_balance_update(pool, redis, user_id)
+                await notify_user(pool, redis, user_id=user_id, key="notify.withdrawal_succeeded", amount=str(amount))
             await redis.xack(PAYOUT_STREAM, GROUP, msg_id)
             span.set_attribute("payout.outcome", "succeeded")
             return "succeeded"
@@ -215,74 +241,24 @@ async def process_one(
                 result.provider_ref,
                 json.dumps(result.raw_response, default=str),
             )
+            metrics.payouts_awaiting_reconciliation_total.labels(cause="provider_accepted").inc()
             await redis.xack(PAYOUT_STREAM, GROUP, msg_id)
             span.set_attribute("payout.outcome", "processing")
             return "processing"
 
-        await _reverse(
-            pool, payment_id=payment_id, user_id=user_id, amount=amount, our_ref=our_ref,
-            reason=f"provider reported status={result.status}",
-        )
-        await ledger.publish_balance_update(pool, redis, user_id)
-        await notify_user(pool, redis, user_id=user_id, key="notify.withdrawal_failed", amount=str(amount))
+        # A definite rejection from the provider: safe to return the funds.
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                txn = await mark_payout_failed(
+                    conn, payment_id=payment_id, reason=f"provider reported status={result.status}"
+                )
+        if txn is not None:
+            metrics.ledger_transactions_total.labels(kind=txn.kind).inc()
+            await ledger.publish_balance_update(pool, redis, user_id)
+            await notify_user(pool, redis, user_id=user_id, key="notify.withdrawal_failed", amount=str(amount))
         await redis.xack(PAYOUT_STREAM, GROUP, msg_id)
         span.set_attribute("payout.outcome", "failed")
         return "failed"
-
-
-async def _settle_success(
-    pool: asyncpg.Pool, *, payment_id: int, user_id: int, amount: Decimal, our_ref: str, provider_ref: str
-) -> None:
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            locked = await ledger.get_or_create_account(conn, user_id, "user_locked")
-            provider_account = await ledger.get_or_create_account(conn, None, "provider_settlement")
-            txn = await ledger.post(
-                conn,
-                "payout",
-                [ledger.Entry(locked.id, -amount), ledger.Entry(provider_account.id, amount)],
-                idempotency_key=f"payout-settle-{our_ref}",
-                payment_id=payment_id,
-            )
-            await conn.execute(
-                "UPDATE payments SET status = 'succeeded', provider_ref = $2, ledger_txn_id = $3, "
-                "updated_at = now() WHERE id = $1",
-                payment_id,
-                provider_ref,
-                txn.id,
-            )
-        # Only reachable once the transaction above has actually
-        # committed -- see ledger.post()'s own comment for why it can't
-        # safely record this itself when called nested, which every real
-        # call is.
-        metrics.ledger_transactions_total.labels(kind=txn.kind).inc()
-
-
-async def _reverse(
-    pool: asyncpg.Pool, *, payment_id: int, user_id: int, amount: Decimal, our_ref: str, reason: str
-) -> None:
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            locked = await ledger.get_or_create_account(conn, user_id, "user_locked")
-            cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
-            txn = await ledger.post(
-                conn,
-                "refund",
-                [ledger.Entry(locked.id, -amount), ledger.Entry(cash.id, amount)],
-                idempotency_key=f"payout-reverse-{our_ref}",
-                payment_id=payment_id,
-            )
-            await conn.execute(
-                "UPDATE payments SET status = 'failed', failure_reason = $2, updated_at = now() "
-                "WHERE id = $1",
-                payment_id,
-                reason,
-            )
-        # Only reachable once the transaction above has actually
-        # committed -- see ledger.post()'s own comment for why it can't
-        # safely record this itself when called nested, which every real
-        # call is.
-        metrics.ledger_transactions_total.labels(kind=txn.kind).inc()
 
 
 def _flatten(streams: Any) -> list[tuple[str, dict[str, str]]]:

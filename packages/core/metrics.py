@@ -351,6 +351,11 @@ keno_settlement_errors_total = Counter("keno_settlement_errors_total", "Settleme
 keno_active_players = Gauge("keno_active_players", "Distinct users with a ticket in the current round")
 keno_ws_connections = Gauge("keno_ws_connections", "Gateway connections currently subscribed to keno:live")
 keno_bet_rejections_total = Counter("keno_bet_rejections_total", "Rejected bet placements, by reason", ["reason"])
+payouts_awaiting_reconciliation_total = Counter(
+    "payouts_awaiting_reconciliation_total",
+    "Payouts left at 'processing' for an admin because their outcome is unknown, by cause",
+    ["cause"],
+)
 keno_autoplay_errors_total = Counter(
     "keno_autoplay_errors_total",
     "Autoplay sessions stopped because placing or recording one of their tickets raised unexpectedly, by stage",

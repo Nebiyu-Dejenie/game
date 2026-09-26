@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
@@ -514,6 +514,49 @@ async def reject_withdrawal(
         ip_address=_client_ip(request),
     )
     return {"rejected": rejected}
+
+
+# --- payouts awaiting reconciliation (operator decision, 2026-09-26) ------
+# Automatic payouts whose outcome the worker doesn't know. It never
+# resends or refunds them; an admin checks Chapa and records the outcome.
+
+
+@app.get("/payouts/awaiting-reconciliation")
+async def list_payouts_awaiting_reconciliation(
+    admin: Annotated[AdminSession, Depends(require("payments:view"))],
+) -> list[dict[str, Any]]:
+    return await queries.list_payouts_awaiting_reconciliation(app.state.pool)
+
+
+class PayoutResolutionRequest(BaseModel):
+    outcome: Literal["paid", "failed"]
+    reason: str
+    provider_ref: str | None = None
+
+
+@app.post("/payouts/{payment_id}/resolve")
+async def resolve_payout(
+    request: Request,
+    admin: Annotated[AdminSession, Depends(require("payments:approve"))],
+    payment_id: int,
+    body: PayoutResolutionRequest,
+) -> dict[str, bool]:
+    _require_reason(body.reason)
+    provider_ref = body.provider_ref.strip() if body.provider_ref else None
+    try:
+        await queries.resolve_payout_admin(
+            app.state.pool,
+            app.state.redis,
+            admin_id=admin.admin_id,
+            payment_id=payment_id,
+            outcome=body.outcome,
+            provider_ref=provider_ref or None,
+            reason=body.reason,
+            ip_address=_client_ip(request),
+        )
+    except queries.PayoutNotResolvable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"resolved": True}
 
 
 # --- manual deposits (P1: keep taking deposits when Chapa is down) -------

@@ -188,45 +188,47 @@ async def test_rejected_payout_pushes_a_live_balance_update(pool, redis, conn):
     assert push["locked"] == "0.00"
 
 
-async def test_provider_exception_also_reverses_the_lock(pool, redis, conn):
+async def test_a_provider_exception_leaves_the_payout_for_reconciliation_not_refunded(pool, redis, conn):
+    """Operator decision, 2026-09-26: an exception from create_payout()
+    (a timeout after sending looks the same as a refused connection) is an
+    unknown outcome. Refunding it could pay the player twice, so the funds
+    stay locked and an admin resolves it. This used to refund."""
     user_id = await create_funded_user(conn, Decimal("500.00"))
     our_ref = await _approved_withdrawal(pool, redis, conn, user_id, Decimal("150.00"))
 
     class ExplodingProvider(FakePayoutProvider):
         async def create_payout(self, *, method, amount, our_ref):
-            raise RuntimeError("network error talking to chapa")
+            raise RuntimeError("read timeout talking to chapa")
 
     outcome = await payout_worker.process_next(pool, redis, ExplodingProvider(), consumer_name="w1")
-    assert outcome == "failed"
-    assert await _cash(conn, user_id) == Decimal("500.00")
-    assert await _locked(conn, user_id) == Decimal("0.00")
+    assert outcome == "awaiting_reconciliation"
+    assert await _cash(conn, user_id) == Decimal("350.00")
+    assert await _locked(conn, user_id) == Decimal("150.00")
+    row = await conn.fetchrow("SELECT status, failure_reason FROM payments WHERE our_ref = $1", our_ref)
+    assert row["status"] == "processing"
+    assert row["failure_reason"].startswith("outcome unknown: read timeout")
+    assert await conn.fetchval(
+        "SELECT count(*) FROM ledger_transactions WHERE idempotency_key = $1", f"payout-reverse-{our_ref}"
+    ) == 0
 
 
-async def test_crashed_worker_job_is_redelivered_and_settles_exactly_once(pool, redis, conn):
-    """Simulates a worker that died right after marking the job
-    'processing' (having possibly already called the provider) -- the
-    stream entry was never acked, so it's still in this consumer's pending
-    list. A fresh call picks it up, calls the (idempotent-on-our_ref)
-    provider again, and the ledger settles exactly once regardless.
-    """
+async def test_a_redelivered_job_for_a_processing_payout_is_never_sent_again(pool, redis, conn):
+    """A worker died after marking the payout 'processing' (having possibly
+    already called Chapa), so the stream entry was never acked. The old
+    behaviour sent it again, relying on Chapa deduplicating our_ref; if
+    Chapa rejected the repeat instead, the worker refunded a transfer that
+    had gone out. Now it's never resent and waits for reconciliation."""
     user_id = await create_funded_user(conn, Decimal("500.00"))
     our_ref = await _approved_withdrawal(pool, redis, conn, user_id, Decimal("200.00"))
-
-    # Simulate the crash: the payment reached 'processing' but the process
-    # died before settling, and the stream message was never acked.
     await conn.execute("UPDATE payments SET status = 'processing' WHERE our_ref = $1", our_ref)
 
     provider = FakePayoutProvider()
-    # First "redelivery" pickup after the simulated crash.
     outcome = await payout_worker.process_next(pool, redis, provider, consumer_name="w1")
-    assert outcome == "succeeded"
-    assert provider.call_count[our_ref] == 1
 
-    settle_txns = await conn.fetchval(
-        "SELECT count(*) FROM ledger_transactions WHERE idempotency_key = $1", f"payout-settle-{our_ref}"
-    )
-    assert settle_txns == 1
-    assert await _locked(conn, user_id) == Decimal("0.00")
+    assert outcome == "awaiting_reconciliation"
+    assert provider.call_count[our_ref] == 0
+    assert await conn.fetchval("SELECT status FROM payments WHERE our_ref = $1", our_ref) == "processing"
+    assert await _locked(conn, user_id) == Decimal("200.00")
     assert await _cash(conn, user_id) == Decimal("300.00")
 
 
