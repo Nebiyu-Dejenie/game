@@ -106,20 +106,22 @@ async def test_list_stuck_processing_payouts_surfaces_an_unresolved_transfer(poo
     outcome = await payout_worker.process_next(pool, redis, provider, consumer_name="stuck-processing-test")
     assert outcome == "processing"
 
-    # Not yet old enough -- must not flag a transfer that's simply
-    # mid-flight through a normal, still-recent dispatch.
-    too_soon = await queries.list_stuck_processing_payouts(pool, older_than_seconds=3600)
-    assert not any(r["id"] == intent.payment_id for r in too_soon)
+    # Listed straight away (the admin should see it), but not resolvable
+    # while the worker could still be mid-call with Chapa.
+    fresh = await queries.list_payouts_awaiting_reconciliation(pool)
+    fresh_match = next((r for r in fresh if r["id"] == intent.payment_id), None)
+    assert fresh_match is not None and fresh_match["resolvable"] is False
 
     await conn.execute(
         "UPDATE payments SET updated_at = now() - interval '2 hours' WHERE id = $1", intent.payment_id
     )
 
-    stuck = await queries.list_stuck_processing_payouts(pool, older_than_seconds=3600)
+    stuck = await queries.list_payouts_awaiting_reconciliation(pool)
     match = next((r for r in stuck if r["id"] == intent.payment_id), None)
     assert match is not None
     assert match["our_ref"] == intent.our_ref
     assert match["amount"] == Decimal("100.00")
+    assert match["resolvable"] is True
     # provider_ref must be there -- it's what an admin actually needs to
     # look this transfer up with Chapa directly.
     assert match["provider_ref"] == f"chapa-{intent.our_ref}"
