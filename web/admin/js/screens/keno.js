@@ -3,6 +3,7 @@ import * as overview from "./keno/overview.js";
 import * as rounds from "./keno/rounds.js";
 import * as paytables from "./keno/paytables.js";
 import * as tiers from "./keno/tiers.js";
+import * as rules from "./keno/rules.js";
 import * as simulator from "./keno/simulator.js";
 import * as reports from "./keno/reports.js";
 
@@ -14,9 +15,10 @@ export const label = "Keno";
 // enforcement; hiding a tab just saves a click-then-403.
 const SECTIONS = [
   { key: "overview", label: "Overview", mod: overview },
+  { key: "rules", label: "Rules", mod: rules },
   { key: "rounds", label: "Rounds", mod: rounds },
   { key: "paytables", label: "Paytables", mod: paytables },
-  { key: "tiers", label: "Tiers & access", mod: tiers },
+  { key: "tiers", label: "Stakes, tiers & access", mod: tiers },
   { key: "simulator", label: "Risk simulator", mod: simulator, roles: ["ops", "superadmin"] },
   { key: "reports", label: "Reports", mod: reports },
 ];

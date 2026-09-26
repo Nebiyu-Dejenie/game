@@ -25,6 +25,8 @@ import * as bonusesScreen from "./screens/bonuses.js";
 import * as telegramHealthScreen from "./screens/telegram_health.js";
 import * as simulatedPlayersScreen from "./screens/simulated_players.js";
 import * as announcementScreen from "./screens/announcement.js";
+import * as settingsScreen from "./screens/settings.js";
+import * as configHistoryScreen from "./screens/config_history.js";
 
 // Order here is the nav order. Each screen owns its own error handling
 // (an inline banner using the real API error detail, e.g. "role 'support'
@@ -54,7 +56,31 @@ const SCREENS = {
   risk: riskScreen,
   audit: auditScreen,
   admin_users: adminUsersScreen,
+  settings: settingsScreen,
+  config_history: configHistoryScreen,
 };
+
+// The nav, grouped the way an operator thinks about the back office
+// rather than one flat list of two dozen buttons. Every SCREENS key
+// appears in exactly one group (checked below, so a screen added to
+// SCREENS but forgotten here fails loudly in the console, not silently).
+const NAV_GROUPS = [
+  ["Operations", ["dashboard", "rounds", "rooms", "keno", "simulated_players"]],
+  ["Players", ["users", "bonuses"]],
+  ["Finance", [
+    "payments", "manual_deposits", "manual_withdrawals", "telebirr_evidence",
+    "payment_agents", "payment_destinations", "provider_availability", "ingestion_devices",
+  ]],
+  ["Risk & reports", ["risk", "reports"]],
+  ["Content", ["announcement", "notifications", "bot_content", "telegram_health"]],
+  ["Configuration", ["settings", "config_history"]],
+  ["Staff & audit", ["admin_users", "audit"]],
+];
+{
+  const grouped = new Set(NAV_GROUPS.flatMap(([, keys]) => keys));
+  const missing = Object.keys(SCREENS).filter((key) => !grouped.has(key));
+  if (missing.length) console.error("admin nav: screens missing from NAV_GROUPS:", missing);
+}
 
 // A client-side mirror of services/admin/rbac.py's *:view permissions,
 // for nav visibility only -- an architecture audit caught that every
@@ -71,6 +97,8 @@ const SCREEN_VIEW_ROLES = {
   bot_content: ["ops", "superadmin"],
   audit: ["superadmin"],
   admin_users: ["superadmin"],
+  settings: ["finance", "ops", "superadmin"],
+  config_history: ["finance", "ops", "superadmin"],
 };
 
 function visibleScreens(role) {
@@ -85,16 +113,35 @@ const navEl = document.getElementById("nav");
 const contentEl = document.getElementById("content");
 
 function buildNav(active) {
+  const visible = new Map(visibleScreens(getRole()));
+  const open = navEl.classList.contains("open");
   navEl.innerHTML = `
+    <button id="nav-toggle" type="button" aria-expanded="${open}" aria-controls="nav">
+      ☰ ${visible.get(active)?.label || "Menu"}
+    </button>
     <div class="nav-brand">Zemen Game Admin</div>
-    ${visibleScreens(getRole()).map(([name, mod]) => `
-      <button class="nav-btn ${name === active ? "active" : ""}" data-screen="${name}">${mod.label}</button>
-    `).join("")}
+    ${NAV_GROUPS.map(([groupLabel, keys]) => {
+      const items = keys.filter((key) => visible.has(key));
+      if (!items.length) return "";
+      return `
+        <div class="nav-group-label" role="presentation">${groupLabel}</div>
+        ${items.map((name) => `
+          <button class="nav-btn ${name === active ? "active" : ""}" data-screen="${name}"
+            ${name === active ? 'aria-current="page"' : ""}>${visible.get(name).label}</button>
+        `).join("")}`;
+    }).join("")}
     <button class="nav-btn nav-logout" id="logout-btn">Log out</button>
   `;
   for (const btn of navEl.querySelectorAll(".nav-btn[data-screen]")) {
-    btn.addEventListener("click", () => showScreen(btn.dataset.screen));
+    btn.addEventListener("click", () => {
+      navEl.classList.remove("open");
+      showScreen(btn.dataset.screen);
+    });
   }
+  navEl.querySelector("#nav-toggle").addEventListener("click", () => {
+    const nowOpen = navEl.classList.toggle("open");
+    navEl.querySelector("#nav-toggle").setAttribute("aria-expanded", String(nowOpen));
+  });
   navEl.querySelector("#logout-btn").addEventListener("click", doLogout);
 }
 

@@ -256,8 +256,16 @@ def _find_fallback_chromium() -> str | None:
     import glob
     import pathlib
 
-    cache = pathlib.Path.home() / ".cache" / "ms-playwright"
-    matches = sorted(glob.glob(str(cache / "chromium-*" / "chrome-linux64" / "chrome")))
+    roots = [pathlib.Path.home() / ".cache" / "ms-playwright"]
+    # Environments that pre-install browsers point Playwright at them with
+    # PLAYWRIGHT_BROWSERS_PATH, sometimes at a different build number than
+    # the pinned playwright package expects.
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        roots.insert(0, pathlib.Path(os.environ["PLAYWRIGHT_BROWSERS_PATH"]))
+    matches: list[str] = []
+    for root in roots:
+        for platform_dir in ("chrome-linux64", "chrome-linux"):
+            matches += sorted(glob.glob(str(root / "chromium-*" / platform_dir / "chrome")))
     return matches[-1] if matches else None
 
 
