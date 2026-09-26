@@ -181,6 +181,16 @@ PERMISSIONS: dict[str, frozenset[str]] = {
     # bot_content:manage's own {ops, superadmin} for the same reason).
     "announcement:view": frozenset({"support", "finance", "ops", "superadmin"}),
     "announcement:manage": frozenset({"ops", "superadmin"}),
+
+    # Platform settings (packages/core/platform_settings.py) and the
+    # configuration change history. Reading them is what finance and ops
+    # need to answer "why was this withdrawal held" or "who changed the
+    # draw timing", so view is broad. Changing them moves the money
+    # controls themselves -- the auto-approve / two-person threshold, KYC
+    # threshold, deposit and withdrawal limits, responsible-gaming timings
+    # -- the same blast radius as payments:configure, so superadmin only.
+    "settings:view": frozenset({"finance", "ops", "superadmin"}),
+    "settings:manage": frozenset({"superadmin"}),
 }
 
 

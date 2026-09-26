@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 ADMIN_WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web" / "admin"
 
+from packages.core import platform_settings
 from packages.core.config import get_settings
 from packages.core.db_pool import create_pool
 from packages.core.redis_conn import get_redis
@@ -33,6 +34,7 @@ from services.admin import (
     command_registry_queries,
     keno_queries,
     notification_queries,
+    platform_settings_queries,
     queries,
     search_queries,
     simulated_players_queries,
@@ -589,7 +591,7 @@ async def approve_manual_deposit(
             payment_id=payment_id,
             reason=body.reason,
             ip_address=_client_ip(request),
-            two_person_threshold=get_settings().auto_approve_withdraw_etb,
+            two_person_threshold=(await platform_settings.load(app.state.pool)).auto_approve_withdraw_etb,
         )
     except queries.SameAdminCannotProvideSecondApproval as exc:
         raise HTTPException(status_code=409, detail="same_admin_cannot_double_approve") from exc
@@ -680,7 +682,7 @@ async def approve_manual_withdrawal(
             payment_id=payment_id,
             reason=body.reason,
             ip_address=_client_ip(request),
-            two_person_threshold=get_settings().auto_approve_withdraw_etb,
+            two_person_threshold=(await platform_settings.load(app.state.pool)).auto_approve_withdraw_etb,
         )
     except queries.SameAdminCannotProvideSecondApproval as exc:
         raise HTTPException(status_code=409, detail="same_admin_cannot_double_approve") from exc
@@ -2065,6 +2067,81 @@ async def send_test_telegram_command(
 
 
 # --- audit log ---------------------------------------------------------
+
+
+# --- platform settings and configuration history ---------------------------
+
+
+@app.get("/settings")
+async def get_platform_settings(
+    admin: Annotated[AdminSession, Depends(require("settings:view"))],
+) -> dict[str, Any]:
+    """Every configurable platform setting, grouped, with its effective
+    value, default, bounds and who last changed it. The console renders
+    its settings screen from this, so a setting added to the registry
+    appears there without a UI change."""
+    return await platform_settings_queries.list_settings_admin(app.state.pool)
+
+
+class UpdatePlatformSettingsRequest(BaseModel):
+    changes: dict[str, Any]
+    reason: str
+
+
+@app.patch("/settings")
+async def update_platform_settings(
+    request: Request,
+    admin: Annotated[AdminSession, Depends(require("settings:manage"))],
+    body: UpdatePlatformSettingsRequest,
+) -> dict[str, Any]:
+    _require_reason(body.reason)
+    try:
+        return await platform_settings_queries.update_settings_admin(
+            app.state.pool, admin_id=admin.admin_id, changes=body.changes, reason=body.reason,
+            ip_address=_client_ip(request),
+        )
+    except platform_settings_queries.InvalidSetting as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ResetPlatformSettingRequest(BaseModel):
+    reason: str
+
+
+@app.post("/settings/{key}/reset")
+async def reset_platform_setting(
+    request: Request,
+    admin: Annotated[AdminSession, Depends(require("settings:manage"))],
+    key: str,
+    body: ResetPlatformSettingRequest,
+) -> dict[str, Any]:
+    _require_reason(body.reason)
+    try:
+        return await platform_settings_queries.reset_setting_admin(
+            app.state.pool, admin_id=admin.admin_id, key=key, reason=body.reason, ip_address=_client_ip(request),
+        )
+    except platform_settings_queries.InvalidSetting as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/config-history")
+async def config_history(
+    admin: Annotated[AdminSession, Depends(require("settings:view"))],
+    scope: str | None = None,
+    target_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Who changed which configuration, from what to what, when and why --
+    configuration changes only (platform settings, Keno rules/tiers/
+    paytables, Bingo rooms, payment rails, bonus rules, player-facing
+    content). Player- and payment-level actions stay in the
+    superadmin-only /audit-log."""
+    try:
+        return await platform_settings_queries.config_history_admin(
+            app.state.pool, scope=scope, target_id=target_id, limit=limit
+        )
+    except platform_settings_queries.InvalidSetting as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/audit-log")

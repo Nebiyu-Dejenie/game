@@ -15,7 +15,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message, ReplyKeyboardRemove
 from redis.asyncio import Redis
 
-from packages.core import ledger, responsible_gaming
+from packages.core import ledger, platform_settings, responsible_gaming
 from packages.core.config import Settings
 from packages.core.metrics import telegram_command_blocked_total
 from services.bot import command_registry, referral
@@ -388,9 +388,10 @@ async def cmd_deposit(
             await notifier.send(message.chat.id, t("deposit.not_available", language))
         return
 
+    limits = await platform_settings.load(pool, settings)
     raw_amount = (command.args or "").strip()
     if not raw_amount:
-        await notifier.send(message.chat.id, t("deposit.usage", language, min=str(settings.min_deposit_etb)))
+        await notifier.send(message.chat.id, t("deposit.usage", language, min=str(limits.min_deposit_etb)))
         return
     try:
         amount = Decimal(raw_amount)
@@ -411,15 +412,15 @@ async def cmd_deposit(
             phone_e164=user.phone_e164,
             return_url=settings.miniapp_url,
             callback_url=f"{settings.payments_public_base_url}/webhooks/chapa",
-            min_deposit=settings.min_deposit_etb,
-            daily_cap=settings.daily_deposit_cap_etb,
+            min_deposit=limits.min_deposit_etb,
+            daily_cap=limits.daily_deposit_cap_etb,
         )
     except deposits.DepositRateLimited:
         await notifier.send(message.chat.id, t("deposit.rate_limited", language))
         return
     except deposits.BelowMinimumDeposit:
         await notifier.send(
-            message.chat.id, t("deposit.below_minimum", language, min=str(settings.min_deposit_etb))
+            message.chat.id, t("deposit.below_minimum", language, min=str(limits.min_deposit_etb))
         )
         return
     except deposits.DailyDepositCapExceeded:
@@ -469,10 +470,11 @@ async def cmd_withdraw(
         await notifier.send(message.chat.id, t("withdraw.not_available", language))
         return
 
+    limits = await platform_settings.load(pool, settings)
     parts = (command.args or "").split(maxsplit=2)
     if len(parts) < 3:
         await notifier.send(
-            message.chat.id, t("withdraw.usage", language, min=str(settings.min_withdraw_etb))
+            message.chat.id, t("withdraw.usage", language, min=str(limits.min_withdraw_etb))
         )
         return
     raw_amount, account_ref, holder_name = parts
@@ -495,16 +497,16 @@ async def cmd_withdraw(
             method_kind=withdrawals.DEFAULT_METHOD_KIND,
             account_ref=account_ref,
             holder_name=holder_name,
-            min_withdraw=settings.min_withdraw_etb,
-            auto_approve_limit=settings.auto_approve_withdraw_etb,
-            kyc_threshold=settings.kyc_required_above_etb,
-            chargeback_window_minutes=settings.withdraw_chargeback_window_minutes,
-            max_withdrawals_per_day=settings.max_withdrawals_per_day,
+            min_withdraw=limits.min_withdraw_etb,
+            auto_approve_limit=limits.auto_approve_withdraw_etb,
+            kyc_threshold=limits.kyc_required_above_etb,
+            chargeback_window_minutes=limits.withdraw_chargeback_window_minutes,
+            max_withdrawals_per_day=limits.max_withdrawals_per_day,
             force_review=use_manual,
         )
     except withdrawals.BelowMinimumWithdrawal:
         await notifier.send(
-            message.chat.id, t("withdraw.below_minimum", language, min=str(settings.min_withdraw_etb))
+            message.chat.id, t("withdraw.below_minimum", language, min=str(limits.min_withdraw_etb))
         )
         return
     except withdrawals.InsufficientAvailableBalance:
@@ -598,15 +600,9 @@ async def cmd_limits(
         if parsed.value.lower() != responsible_gaming.SELF_EXCLUDE_CONFIRMATION_TOKEN:
             await notifier.send(message.chat.id, t("limits.selfexclude_confirm", language))
             return
-        await responsible_gaming.self_exclude(pool, user.id)
-        await notifier.send(
-            message.chat.id,
-            t(
-                "limits.selfexclude_done",
-                language,
-                days=responsible_gaming.SELF_EXCLUSION_MINIMUM_DAYS,
-            ),
-        )
+        days = await responsible_gaming.self_exclusion_minimum_days(pool)
+        await responsible_gaming.self_exclude(pool, user.id, days=days)
+        await notifier.send(message.chat.id, t("limits.selfexclude_done", language, days=days))
 
 
 @router.message(Command("language"))
@@ -814,8 +810,9 @@ async def on_customer_telebirr_paste(
     reference = extract_reference(message.text or "")
     assert reference is not None  # guaranteed by this handler's own filter
 
+    limits = await platform_settings.load(pool, settings)
     outcome = await redeem_evidence(
-        pool, redis, user_id=user.id, reference=reference, daily_cap=settings.daily_deposit_cap_etb,
+        pool, redis, user_id=user.id, reference=reference, daily_cap=limits.daily_deposit_cap_etb,
     )
     if outcome.code == CODE_PAYMENT_REDEEMED:
         assert outcome.amount is not None

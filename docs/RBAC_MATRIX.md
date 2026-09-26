@@ -56,6 +56,8 @@ path calls `audit.record()`, and `admin_audit_log` is append-only
 | `telegram:view_health` | ✅ | ✅ | ✅ | ✅ | Live Telegram webhook health (`getWebhookInfo`) — same breadth as `dashboard:view`; a read-only, side-effect-free check every role benefits from | N/A (read) |
 | `telegram:commands_view` | ✅ | ✅ | ✅ | ✅ | Command registry + live per-command metrics | N/A (read) |
 | `telegram:commands_manage` | ❌ | ❌ | ✅ | ✅ | Enable/disable a command, edit its description/category/cooldown/rate limit, preview content, send a test message | YES |
+| `settings:view` | ❌ | ✅ | ✅ | ✅ | Platform settings and the configuration change history | N/A (read) |
+| `settings:manage` | ❌ | ❌ | ❌ | ✅ | Change or reset platform settings (deposit/withdrawal limits, auto-approve/two-person and KYC thresholds, responsible-gaming timings) | YES |
 
 ## Separation-of-duties properties this table actually enforces
 

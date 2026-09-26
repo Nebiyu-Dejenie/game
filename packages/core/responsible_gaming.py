@@ -28,9 +28,14 @@ from enum import Enum
 
 import asyncpg
 
+from packages.core import platform_settings
 from packages.core.ledger import AsyncpgConnection
 
-SELF_EXCLUSION_MINIMUM_DAYS = 180  # spec section 12: "6 months minimum"
+# Absolute floors (spec section 12: "6 months minimum"). The operator can
+# make both stricter from the admin console (packages/core/
+# platform_settings.py), never weaker -- the registry's own minimums are
+# these values.
+SELF_EXCLUSION_MINIMUM_DAYS = 180
 LIMIT_INCREASE_DELAY_HOURS = 24
 
 # services/bot/handlers.py has a mechanically-enforced rule (see
@@ -164,7 +169,7 @@ async def set_deposit_limit(conn: AsyncpgConnection, user_id: int, new_cap: Deci
         )
         return True
 
-    effective_at = datetime.now(UTC) + timedelta(hours=LIMIT_INCREASE_DELAY_HOURS)
+    effective_at = datetime.now(UTC) + timedelta(hours=await _limit_increase_delay_hours(conn))
     await conn.execute(
         "UPDATE responsible_gaming_limits SET pending_daily_deposit_cap = $2, "
         "pending_daily_deposit_cap_effective_at = $3, updated_at = now() WHERE user_id = $1",
@@ -189,7 +194,7 @@ async def set_loss_limit(conn: AsyncpgConnection, user_id: int, new_cap: Decimal
         )
         return True
 
-    effective_at = datetime.now(UTC) + timedelta(hours=LIMIT_INCREASE_DELAY_HOURS)
+    effective_at = datetime.now(UTC) + timedelta(hours=await _limit_increase_delay_hours(conn))
     await conn.execute(
         "UPDATE responsible_gaming_limits SET pending_daily_loss_cap = $2, "
         "pending_daily_loss_cap_effective_at = $3, updated_at = now() WHERE user_id = $1",
@@ -210,13 +215,22 @@ async def cool_off(conn: AsyncpgConnection, user_id: int, duration_hours: int) -
     )
 
 
-async def self_exclude(
-    pool: asyncpg.Pool, user_id: int, *, days: int = SELF_EXCLUSION_MINIMUM_DAYS
-) -> None:
-    if days < SELF_EXCLUSION_MINIMUM_DAYS:
-        raise SelfExclusionTooShort(
-            f"self-exclusion must be at least {SELF_EXCLUSION_MINIMUM_DAYS} days, got {days}"
-        )
+async def _limit_increase_delay_hours(conn: AsyncpgConnection) -> int:
+    configured = (await platform_settings.load(conn)).rg_limit_increase_delay_hours
+    return max(configured, LIMIT_INCREASE_DELAY_HOURS)
+
+
+async def self_exclusion_minimum_days(db: asyncpg.Pool | AsyncpgConnection) -> int:
+    configured = (await platform_settings.load(db)).rg_self_exclusion_minimum_days
+    return max(configured, SELF_EXCLUSION_MINIMUM_DAYS)
+
+
+async def self_exclude(pool: asyncpg.Pool, user_id: int, *, days: int | None = None) -> None:
+    """days=None means the operator's configured minimum."""
+    minimum = await self_exclusion_minimum_days(pool)
+    days = minimum if days is None else days
+    if days < minimum:
+        raise SelfExclusionTooShort(f"self-exclusion must be at least {minimum} days, got {days}")
     until = datetime.now(UTC) + timedelta(days=days)
     async with pool.acquire() as conn:
         async with conn.transaction():

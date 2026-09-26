@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from packages.core import keno_autoplay, keno_queries, keno_tickets, rate_limit, telegram_auth
+from packages.core import keno_autoplay, keno_queries, keno_tickets, platform_settings, rate_limit, telegram_auth
 from packages.core.config import get_settings
 from packages.core.db_pool import create_pool
 from packages.core.ledger import user_balance_snapshot
@@ -162,6 +162,22 @@ async def api_payment_methods(authorization: str = Header(default="")) -> dict[s
     return await availability.get_payment_availability(app.state.pool, get_settings())
 
 
+@app.get("/api/limits")
+async def api_limits(authorization: str = Header(default="")) -> dict[str, Any]:
+    """The payment limits currently in force, for the Mini App to show
+    ("minimum deposit 10 ETB") and pre-check. Informational: every one is
+    enforced server-side by the deposit/withdrawal endpoints themselves."""
+    await _authenticated_user_id(authorization)
+    limits = await platform_settings.load(app.state.pool)
+    return {
+        "min_deposit": str(limits.min_deposit_etb),
+        "daily_deposit_cap": str(limits.daily_deposit_cap_etb),
+        "min_withdraw": str(limits.min_withdraw_etb),
+        "max_withdrawals_per_day": limits.max_withdrawals_per_day,
+        "self_exclusion_minimum_days": limits.rg_self_exclusion_minimum_days,
+    }
+
+
 @app.get("/api/announcement")
 async def api_announcement(authorization: str = Header(default="")) -> dict[str, Any]:
     """The admin-configurable scrolling banner (services/admin/
@@ -227,6 +243,7 @@ async def api_create_deposit(
 ) -> dict[str, str]:
     user_id = await _authenticated_user_id(authorization)
     settings = get_settings()
+    limits = await platform_settings.load(app.state.pool, settings)
     # A code-review pass caught that this only ever checked static
     # process-startup config (app.state.chapa/miniapp_url/
     # payments_public_base_url), never the admin's own live
@@ -268,8 +285,8 @@ async def api_create_deposit(
             phone_e164=phone,
             return_url=settings.miniapp_url,
             callback_url=f"{settings.payments_public_base_url}/webhooks/chapa",
-            min_deposit=settings.min_deposit_etb,
-            daily_cap=settings.daily_deposit_cap_etb,
+            min_deposit=limits.min_deposit_etb,
+            daily_cap=limits.daily_deposit_cap_etb,
         )
     except deposits.DepositRejected as exc:
         code = _DEPOSIT_ERROR_CODES.get(type(exc), "provider_error")
@@ -290,6 +307,7 @@ async def api_create_manual_deposit(
 ) -> dict[str, str]:
     user_id = await _authenticated_user_id(authorization)
     settings = get_settings()
+    limits = await platform_settings.load(app.state.pool, settings)
 
     # Same gap as api_create_deposit's: an admin's live availability
     # toggle was only ever enforced by the UI hiding the button, never by
@@ -316,8 +334,8 @@ async def api_create_manual_deposit(
             manual_destination_id=body.manual_destination_id,
             external_reference=body.external_reference,
             receipt_telegram_file_id=None,
-            min_deposit=settings.min_deposit_etb,
-            daily_cap=settings.daily_deposit_cap_etb,
+            min_deposit=limits.min_deposit_etb,
+            daily_cap=limits.daily_deposit_cap_etb,
         )
     except deposits.DepositRejected as exc:
         code = _DEPOSIT_ERROR_CODES.get(type(exc), "provider_error")
@@ -363,6 +381,7 @@ async def api_redeem_telebirr_reference(
     # field for it).
     user_id = await _authenticated_user_id(authorization)
     settings = get_settings()
+    limits = await platform_settings.load(app.state.pool, settings)
 
     methods = await availability.get_payment_availability(app.state.pool, settings)
     if "telebirr_sms" not in methods["deposit"]:
@@ -373,7 +392,7 @@ async def api_redeem_telebirr_reference(
         app.state.redis,
         user_id=user_id,
         reference=body.reference,
-        daily_cap=settings.daily_deposit_cap_etb,
+        daily_cap=limits.daily_deposit_cap_etb,
     )
     if outcome.code != "PAYMENT_REDEEMED":
         detail = _TELEBIRR_REDEEM_ERROR_CODES.get(outcome.code, "provider_error")
@@ -406,6 +425,7 @@ async def api_create_withdrawal(
 ) -> dict[str, str]:
     user_id = await _authenticated_user_id(authorization)
     settings = get_settings()
+    limits = await platform_settings.load(app.state.pool, settings)
 
     if body.provider not in ("chapa", "manual"):
         raise HTTPException(status_code=422, detail="unknown_provider")
@@ -435,11 +455,11 @@ async def api_create_withdrawal(
             method_kind=withdrawals.DEFAULT_METHOD_KIND,
             account_ref=body.account_ref,
             holder_name=body.holder_name,
-            min_withdraw=settings.min_withdraw_etb,
-            auto_approve_limit=settings.auto_approve_withdraw_etb,
-            kyc_threshold=settings.kyc_required_above_etb,
-            chargeback_window_minutes=settings.withdraw_chargeback_window_minutes,
-            max_withdrawals_per_day=settings.max_withdrawals_per_day,
+            min_withdraw=limits.min_withdraw_etb,
+            auto_approve_limit=limits.auto_approve_withdraw_etb,
+            kyc_threshold=limits.kyc_required_above_etb,
+            chargeback_window_minutes=limits.withdraw_chargeback_window_minutes,
+            max_withdrawals_per_day=limits.max_withdrawals_per_day,
             force_review=(body.provider == "manual"),
         )
     except withdrawals.WithdrawalRejected as exc:
