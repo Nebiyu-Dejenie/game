@@ -39,7 +39,9 @@ logger = structlog.get_logger()
 
 # A sanity ceiling on "buy N future rounds" -- not spec-mandated, an
 # operator-safety default against a fat-fingered or malicious huge
-# rounds_total locking in an unbounded sequence of real-money bets.
+# rounds_total locking in an unbounded sequence of real-money bets. The
+# operator can lower it per config version (keno_configs.max_autoplay_rounds,
+# which a CHECK keeps at or below this); it can never be raised past it.
 MAX_ROUNDS_TOTAL = 100
 
 
@@ -143,6 +145,13 @@ async def start_session(
             if block.blocked:
                 assert block.reason is not None
                 raise AutoplayBlockedByResponsibleGaming(block.reason)
+            if rounds_total is not None:
+                configured_cap = await conn.fetchval(
+                    "SELECT max_autoplay_rounds FROM keno_configs WHERE effective_from <= now() "
+                    "ORDER BY effective_from DESC LIMIT 1"
+                )
+                if configured_cap is not None and rounds_total > configured_cap:
+                    raise InvalidAutoplayConfig(f"rounds_total must be between 1 and {configured_cap}")
             existing = await conn.fetchval(
                 "SELECT id FROM keno_autoplay_sessions WHERE user_id = $1 AND status = 'active'", user_id
             )

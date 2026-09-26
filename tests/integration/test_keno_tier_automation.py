@@ -37,17 +37,24 @@ async def _close_any_dangling_betting_open_round(pool):
     await _close()
 
 
+# These tests are about promotion/demotion, not the top-multiplier cap, so
+# the cap is set far above anything another test file leaves live in the
+# shared database (test_keno_tickets.py's deliberately extreme paytables):
+# create_tier_admin refuses a cap below a live paytable's top multiplier.
+_UNCONSTRAINING_TOP_MULTIPLIER = Decimal("100000")
+
+
 async def _make_two_tiers(pool, conn, *, tier1_min=Decimal("0"), tier2_min=Decimal("1000")):
     admin_id, *_ = await create_test_admin(pool, role="superadmin")
     tier1 = await keno_queries.create_tier_admin(
         pool, admin_id=admin_id, tier_number=1, min_reserve=tier1_min, max_pick_count=5,
-        max_top_multiplier=Decimal("16"), stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
+        max_top_multiplier=_UNCONSTRAINING_TOP_MULTIPLIER, stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
         max_win_per_ticket=Decimal("800"), max_round_exposure_pct=Decimal("0.10"),
         paytable_profile="low_variance", reason="test tier 1",
     )
     tier2 = await keno_queries.create_tier_admin(
         pool, admin_id=admin_id, tier_number=2, min_reserve=tier2_min, max_pick_count=6,
-        max_top_multiplier=Decimal("60"), stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
+        max_top_multiplier=_UNCONSTRAINING_TOP_MULTIPLIER, stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
         max_win_per_ticket=Decimal("3000"), max_round_exposure_pct=Decimal("0.10"),
         paytable_profile="low_variance", reason="test tier 2",
     )
@@ -176,7 +183,7 @@ async def test_editing_one_tier_never_breaks_evaluation_against_the_others(pool,
     # original version.
     tier2_v2 = await keno_queries.create_tier_admin(
         pool, admin_id=admin_id, tier_number=2, min_reserve=Decimal("1200"), max_pick_count=6,
-        max_top_multiplier=Decimal("60"), stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
+        max_top_multiplier=_UNCONSTRAINING_TOP_MULTIPLIER, stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
         max_win_per_ticket=Decimal("3000"), max_round_exposure_pct=Decimal("0.10"),
         paytable_profile="low_variance", reason="raise tier 2's own threshold",
     )

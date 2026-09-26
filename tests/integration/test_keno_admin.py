@@ -117,7 +117,9 @@ async def test_create_tier_and_set_current_tier_is_audited(pool):
     admin_id, *_ = await create_test_admin(pool, role="superadmin")
     tier = await keno_queries.create_tier_admin(
         pool, admin_id=admin_id, tier_number=1, min_reserve=Decimal("0"), max_pick_count=5,
-        max_top_multiplier=Decimal("16"), stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
+        # Far above any paytable another test file leaves live in the shared
+        # database -- this test is about auditing, not the multiplier cap.
+        max_top_multiplier=Decimal("100000"), stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
         max_win_per_ticket=Decimal("800"), max_round_exposure_pct=Decimal("0.05"),
         paytable_profile="low_variance", reason="launch tier",
     )

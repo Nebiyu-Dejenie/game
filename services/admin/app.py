@@ -1541,6 +1541,31 @@ async def create_keno_config(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+class UpdateKenoConfigRequest(BaseModel):
+    changes: dict[str, Any]
+    reason: str
+
+
+@app.patch("/keno/configs")
+async def update_keno_config(
+    request: Request,
+    admin: Annotated[AdminSession, Depends(require("keno:configure"))],
+    body: UpdateKenoConfigRequest,
+) -> dict[str, Any]:
+    """Change some Keno rules. Only the named fields change; everything
+    else is carried forward. Takes effect from the next round. See
+    keno_queries.EDITABLE_CONFIG_FIELDS for what can be changed here --
+    keno_enabled is deliberately not one of them (use the kill switch)."""
+    _require_reason(body.reason)
+    try:
+        return await keno_queries.update_config_admin(
+            app.state.pool, admin_id=admin.admin_id, changes=body.changes, reason=body.reason,
+            ip_address=_client_ip(request),
+        )
+    except keno_queries.InvalidKenoConfig as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 class KenoKillSwitchRequest(BaseModel):
     enabled: bool
     reason: str
@@ -1641,9 +1666,11 @@ async def preview_keno_paytable(
     exact RTP ... live" -- pure computation, nothing persisted, safe for
     ops/superadmin (keno:manage) to call on every keystroke while
     designing a table before a superadmin actually activates it."""
+    async with app.state.pool.acquire() as conn:
+        floor, ceiling = await keno_queries.rtp_band(conn)
     try:
-        return keno_queries.preview_paytable_stats(body.pick_count, body.multipliers)
-    except (keno_queries.InvalidKenoConfig, ValueError, KeyError) as exc:
+        return keno_queries.preview_paytable_stats(body.pick_count, body.multipliers, floor=floor, ceiling=ceiling)
+    except (keno_queries.InvalidKenoConfig, ValueError, KeyError, InvalidOperation) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
@@ -1721,6 +1748,8 @@ class CreateKenoTierRequest(BaseModel):
     max_round_exposure_pct: Decimal
     paytable_profile: str
     reason: str
+    disabled_stake_options: list[Decimal] = []
+    default_stake: Decimal | None = None
 
 
 @app.post("/keno/tiers")
@@ -1733,6 +1762,32 @@ async def create_keno_tier(
     try:
         return await keno_queries.create_tier_admin(
             app.state.pool, admin_id=admin.admin_id, ip_address=_client_ip(request), **body.model_dump()
+        )
+    except keno_queries.InvalidKenoConfig as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class UpdateKenoTierRequest(BaseModel):
+    changes: dict[str, Any]
+    reason: str
+    adopt: bool = False
+
+
+@app.patch("/keno/tiers/{tier_id}")
+async def update_keno_tier(
+    request: Request,
+    admin: Annotated[AdminSession, Depends(require("keno:configure"))],
+    tier_id: int,
+    body: UpdateKenoTierRequest,
+) -> dict[str, Any]:
+    """Edit a tier, including stake management (add, remove, disable,
+    re-enable, reorder, default). Always a new tier version; `adopt` makes
+    it current from the next round when this tier is the one in use."""
+    _require_reason(body.reason)
+    try:
+        return await keno_queries.update_tier_admin(
+            app.state.pool, admin_id=admin.admin_id, tier_id=tier_id, changes=body.changes,
+            reason=body.reason, adopt=body.adopt, ip_address=_client_ip(request),
         )
     except keno_queries.InvalidKenoConfig as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

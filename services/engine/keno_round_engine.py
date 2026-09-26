@@ -243,6 +243,10 @@ class KenoRoundEngine:
                 "min_picks": ctx.config["min_picks"],
                 "max_picks": min(ctx.config["max_picks"], ctx.tier["max_pick_count"]),
                 "stake_options": [str(s) for s in ctx.tier["stake_options"]],
+                "default_stake": (
+                    str(ctx.tier["default_stake"]) if ctx.tier["default_stake"] is not None else None
+                ),
+                "max_autoplay_rounds": ctx.config["max_autoplay_rounds"],
             },
         )
         await keno_autoplay.place_for_active_sessions(self._pool, self._redis, round_id=ctx.id)

@@ -75,6 +75,8 @@ async def game_center_state(pool: asyncpg.Pool, user_id: int) -> dict[str, Any] 
         "min_picks": config["min_picks"],
         "max_picks": max_picks,
         "stake_options": [str(s) for s in tier["stake_options"]],
+        "default_stake": str(tier["default_stake"]) if tier["default_stake"] is not None else None,
+        "max_autoplay_rounds": config["max_autoplay_rounds"],
         "max_win_per_ticket": str(tier["max_win_per_ticket"]),
         "tier_number": tier["tier_number"],
         "jackpot_pool": str(jackpot_balance),
