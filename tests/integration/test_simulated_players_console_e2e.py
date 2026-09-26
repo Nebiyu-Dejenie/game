@@ -6,6 +6,8 @@ static files and the real admin API/Postgres/Redis, not a mocked DOM.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from services.admin import simulated_players_queries as spq
@@ -55,15 +57,18 @@ async def test_simulated_players_console_full_flow_over_a_real_browser(admin_ser
         await page.wait_for_selector("#activity-panel", timeout=10000)
         assert "DISABLED" in await page.text_content("#settings-panel")
 
-        # Create a bot through the real form.
-        await page.fill('#create-bot-form input[name="display_name"]', "E2E Console Bot")
+        # Create a bot through the real form. A unique name per run: the
+        # lookup below is by name, and a bot left behind by an interrupted
+        # earlier run must not be the one it finds.
+        bot_name = f"E2E Bot {uuid.uuid4().hex[:6]}"
+        await page.fill('#create-bot-form input[name="display_name"]', bot_name)
         await page.select_option('#create-bot-form select[name="strategy"]', "active")
         await page.click('#create-bot-form button[type="submit"]')
         await page.wait_for_selector("#toast.visible", timeout=5000)
-        await page.wait_for_selector('tr:has-text("E2E Console Bot")', timeout=10000)
+        await page.wait_for_selector(f'tr:has-text("{bot_name}")', timeout=10000)
 
         created_user_id = await pool.fetchval(
-            "SELECT id FROM users WHERE display_name = 'E2E Console Bot' AND is_simulated"
+            "SELECT id FROM users WHERE display_name = $1 AND is_simulated", bot_name
         )
         assert created_user_id is not None
         row_selector = f'tr[data-user-id="{created_user_id}"]'
@@ -132,7 +137,9 @@ async def test_simulated_players_console_full_flow_over_a_real_browser(admin_ser
             reason="e2e setup", ip_address=None,
         )
         await page.reload()
-        await page.wait_for_selector(".stat-grid", timeout=10000)
+        # A reload stays on the current screen (the console keeps it in the
+        # URL hash), so wait for the shell, not the dashboard's stat grid.
+        await page.wait_for_selector("#app-shell:not([hidden])", timeout=10000)
         await page.click('.nav-btn[data-screen="simulated_players"]')
         await page.wait_for_selector("#stop-all-panel form#stop-all-form", timeout=10000)
         assert "ENABLED" in await page.text_content("#settings-panel")
