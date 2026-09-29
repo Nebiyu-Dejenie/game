@@ -396,10 +396,11 @@ class KenoRoundEngine:
             logger.exception("keno_settlement_failed", round_id=round_id)
             metrics.keno_settlement_errors_total.inc()
             # Deliberately not re-raised: this runs detached from the
-            # main loop. A round stuck in 'settling' -- at any age, never
-            # refunded, see recover_on_startup()'s own comment on why --
-            # is retried by the next recovery sweep: recover_on_startup()
-            # at process boot, or _recover_stuck_settling_rounds() once
+            # main loop. A round stuck in 'draw_complete' or 'settling' --
+            # at any age, never refunded, see recover_on_startup()'s own
+            # comment on why -- is retried by the next recovery sweep:
+            # recover_on_startup() at process boot, or
+            # _recover_stuck_settling_rounds() once
             # per round cycle the rest of the time (services/engine/
             # keno_worker.py is this engine's real, now-wired-up
             # production entrypoint). Money is never silently lost, just
@@ -622,26 +623,31 @@ class KenoRoundEngine:
         make paid tickets no-ops") -- unlike recover_on_startup()'s other
         branches, this never fails+refunds a settling round.
 
-        Scoped to 'settling' specifically, not a general re-run of
+        Scoped to 'draw_complete' and 'settling', not a general re-run of
         recover_on_startup(): every OTHER non-terminal status is always
         being actively, synchronously driven by this same engine's one
         currently-executing _run_one_round() call (there is never more
         than one in flight at a time), so re-resuming those here would
-        race the very call already handling them. 'settling' is the one
-        status that legitimately becomes detached from the main loop
-        (_spawn_settlement() below), which is exactly why
-        self._settling_round_ids exists: a round still in that set has a
-        real in-flight task and must be left alone; one that's fallen out
-        of it while still showing 'settling' in the database is precisely
-        the orphaned case this exists to catch.
+        race the very call already handling them. A round leaves the main
+        loop at 'draw_complete', handed to _spawn_settlement() below,
+        which is exactly why self._settling_round_ids exists: a round
+        still in that set has a real in-flight task and must be left
+        alone; one that's fallen out of it while still showing
+        'draw_complete' or 'settling' in the database is precisely the
+        orphaned case this exists to catch. 'draw_complete' is the task
+        dying before it wrote 'settling' (a broken pooled connection, an
+        acquire timeout), which left the winners unpaid until a restart
+        (platform audit, 2026-09-29).
         """
         async with self._pool.acquire() as conn:
-            stuck_rows = await conn.fetch("SELECT id FROM keno_rounds WHERE status = 'settling'")
+            stuck_rows = await conn.fetch(
+                "SELECT id, status FROM keno_rounds WHERE status IN ('draw_complete', 'settling')"
+            )
         for row in stuck_rows:
             round_id = row["id"]
             if round_id in self._settling_round_ids:
                 continue  # a real in-flight task already owns this one
-            logger.warning("keno_round_settling_recovery_resuming", round_id=round_id)
+            logger.warning("keno_round_settling_recovery_resuming", round_id=round_id, status=row["status"])
             self._spawn_settlement(round_id)
 
     async def _update_oldest_nonterminal_round_gauge(self) -> None:

@@ -745,6 +745,73 @@ async def test_the_refund_path_refuses_a_round_whose_numbers_were_drawn(pool: as
     assert (round_status, ticket_status) == ("draw_complete", "pending")
 
 
+async def test_a_drawn_round_whose_settlement_died_before_settling_is_settled_on_the_next_cycle(
+    pool: asyncpg.Pool, redis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-cycle sweep retried only 'settling' rounds. A settlement task
+    that failed before it wrote 'settling' (a broken pooled connection, a
+    pool-acquire timeout) left its round in 'draw_complete', which nothing
+    looked at again until the process restarted: the winners stayed unpaid
+    while later rounds ran normally. Here the round's move to 'settling'
+    fails once; every draw is rigged to hit the ticket's pick, so it won."""
+    monkeypatch.setattr(keno, "derive_keno_draw", lambda *args, **kwargs: list(range(1, 21)))
+    target: dict[str, int] = {}
+    failed_once = asyncio.Event()
+    original_record_event = KenoRoundEngine._record_event
+
+    async def _record_event_failing_once(self, conn, round_id, from_status, to_status, *, reason=None):
+        if to_status == "settling" and round_id == target.get("id") and not failed_once.is_set():
+            failed_once.set()
+            raise asyncpg.exceptions.ConnectionDoesNotExistError("connection was closed in the middle of operation")
+        await original_record_event(self, conn, round_id, from_status, to_status, reason=reason)
+
+    monkeypatch.setattr(KenoRoundEngine, "_record_event", _record_event_failing_once)
+    async with pool.acquire() as conn:
+        await _seed_fast_config_and_tier(conn, betting_seconds=1, draw_seconds=1, result_seconds=1)
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+    balance_before = await ledger.user_balance_snapshot(pool, user_id)
+
+    from packages.core import keno_tickets
+
+    engine = KenoRoundEngine(pool, redis)
+    engine_task = asyncio.create_task(engine.run_forever())
+    try:
+        async def _round_is_betting_open() -> bool:
+            return await pool.fetchval("SELECT id FROM keno_rounds WHERE status = 'betting_open'") is not None
+
+        await _wait_until(_round_is_betting_open)
+        round_id = await pool.fetchval("SELECT id FROM keno_rounds WHERE status = 'betting_open'")
+        assert round_id is not None
+        target["id"] = round_id
+        ticket = await keno_tickets.place_ticket(
+            pool, redis=redis, user_id=user_id, picks=[7], stake=Decimal("10"), idempotency_key=f"test-{uuid.uuid4()}"
+        )
+        assert ticket.round_id == round_id
+
+        await asyncio.wait_for(failed_once.wait(), timeout=15.0)
+
+        # Two more rounds open while the process keeps running, so the sweep
+        # at the start of each has had its chance.
+        async def _two_later_rounds_betting() -> bool:
+            later = await pool.fetchval(
+                "SELECT count(*) FROM keno_rounds WHERE id > $1 AND status <> 'scheduled'", round_id
+            )
+            return later >= 2
+
+        await _wait_until(_two_later_rounds_betting, timeout=20.0)
+    finally:
+        engine.stop()
+        await asyncio.wait_for(engine_task, timeout=15.0)  # drains any settlement task still running
+
+    async with pool.acquire() as conn:
+        round_status = await conn.fetchval("SELECT status FROM keno_rounds WHERE id = $1", round_id)
+        ticket_row = await conn.fetchrow("SELECT status, payout FROM keno_tickets WHERE id = $1", ticket.id)
+    assert (round_status, ticket_row["status"]) == ("completed", "won")
+    assert ticket_row["payout"] == Decimal("34.00")
+    balance_after = await ledger.user_balance_snapshot(pool, user_id)
+    assert Decimal(balance_after["cash"]) - Decimal(balance_before["cash"]) == Decimal("24.00")  # -10 stake, +34
+
+
 async def test_autoplay_stop_loss_is_not_overshot_by_the_round_that_opens_during_settlement(
     pool: asyncpg.Pool, redis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
