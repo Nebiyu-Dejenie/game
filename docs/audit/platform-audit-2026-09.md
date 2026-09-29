@@ -23,27 +23,27 @@ the status column as items are verified or fixed.
 | 12 | high | `services/admin/bonus_queries.py:178` | Manual bonus grant idempotency key is a timestamp: double-submit or retry grants twice | Fixed, deployed (a7603c5) |
 | 13 | high | `services/admin/keno_queries.py:155` | Keno kill switch and config create silently reset reserve_withdrawal_floor, beta_restricted and the circuit-breaker multiple to defaults | Fixed, deployed (f95ea22) |
 | 14 | high | `services/admin/queries.py:743` | Emergency stop tells every player of the last finished round their stake was refunded when nothing was refunded | Fixed, deployed (0e4ce63) |
-| 15 | high | `services/bot/notification_relay.py:224` | Notification relay: one entry that always fails blocks all Telegram notifications, and the retry loop spins with no backoff | Not yet verified |
-| 16 | high | `services/engine/commands.py:67` | An unvalidated room_id lets any player create unlimited permanent Redis streams (room:{id}:cmds) | Not yet verified |
+| 15 | high | `services/bot/notification_relay.py:224` | Notification relay: one entry that always fails blocks all Telegram notifications, and the retry loop spins with no backoff | Fixed (0528b20), deploy pending |
+| 16 | high | `services/engine/commands.py:67` | An unvalidated room_id lets any player create unlimited permanent Redis streams (room:{id}:cmds) | Fixed (bee89be), deploy pending |
 | 17 | high | `services/engine/keno_round_engine.py:248` | Next round's autoplay tickets are placed before the previous round's settlement updates net_position, so stop-on-loss/win and manual Stop are overshot by one bet | Fixed (939a29b), deploy pending |
 | 18 | high | `services/engine/keno_round_engine.py:591` | Stuck-round recovery refunds rounds whose draw is already persisted and revealed (drawing/draw_complete), cancelling winners' payouts | Fixed (be4f873), deploy pending |
-| 19 | high | `services/engine/keno_round_engine.py:627` | Per-cycle sweep only retries 'settling'; a settlement task that dies before setting 'settling' leaves the round orphaned in 'draw_complete' (then refunded on the next restart) | Not yet verified |
+| 19 | high | `services/engine/keno_round_engine.py:627` | Per-cycle sweep only retries 'settling'; a settlement task that dies before setting 'settling' leaves the round orphaned in 'draw_complete' (then refunded on the next restart) | Fixed (2e2e6a6), deploy pending |
 | 20 | high | `services/engine/keno_round_engine.py:697` | _fail_and_refund_round selects pending tickets before locking the round row, so a ticket committing mid-refund is left 'pending' in a 'failed' round forever | Fixed (6b3899e), deploy pending |
 | 21 | high | `services/engine/round_engine.py:438` | join() can commit a stake into a round that has just been voided; the stake is never refunded | Fixed, deployed (b583cf7) |
-| 22 | high | `services/engine/round_engine.py:590` | Same-call auto-mark co-winners can miss the 50ms tie window because each claim awaits a DB insert before taking its timestamp | Not yet verified |
-| 23 | high | `services/engine/round_engine.py:1218` | Any Redis or DB error in the round loop kills the room's engine and voids the in-flight round | Not yet verified |
-| 24 | high | `services/engine/round_engine.py:1325` | A Redis error on the command reply publish silently kills the room's only command consumer for good | Not yet verified |
-| 25 | high | `services/gateway/app.py:513` | Per-IP Keno ticket limit (20/min) is shared by every player behind the same carrier CGNAT address | Not yet verified |
-| 26 | high | `services/gateway/connection.py:390` | Each engine command holds a dedicated Redis connection for up to 5s; exhausting the 200-connection pool makes the fail-closed rate limiter block every player on the gateway | Not yet verified |
-| 27 | high | `services/gateway/connection.py:501` | Writer task death is never noticed; _cleanup then re-raises it and skips every unsubscribe (frozen client plus a growing hub leak) | Not yet verified |
-| 28 | high | `services/payments/deposits.py:298` | Chapa webhook dedupe key is the transaction reference only, without the status, so a later 'success' event can be discarded as a duplicate | Not yet verified |
-| 29 | high | `services/payments/deposits.py:423` | Deposit polling has no per-item error isolation: one deposit that Chapa rejects aborts the fallback for every other player | Not yet verified |
-| 30 | high | `services/payments/deposits.py:423` | poll_pending_deposits has no per-row isolation, and 'processing' deposits never expire, so one bad row stops the webhook fallback for everyone | Not yet verified |
-| 31 | high | `services/payments/payout_worker.py:407` | A payout entry without 'our_ref' crashes the except handler, and the consumer task dies silently while the process looks healthy | Not yet verified |
+| 22 | high | `services/engine/round_engine.py:590` | Same-call auto-mark co-winners can miss the 50ms tie window because each claim awaits a DB insert before taking its timestamp | Fixed (66fe7e5), deploy pending |
+| 23 | high | `services/engine/round_engine.py:1218` | Any Redis or DB error in the round loop kills the room's engine and voids the in-flight round | Fixed (b097979), deploy pending |
+| 24 | high | `services/engine/round_engine.py:1325` | A Redis error on the command reply publish silently kills the room's only command consumer for good | Fixed (3feea9a), deploy pending |
+| 25 | high | `services/gateway/app.py:513` | Per-IP Keno ticket limit (20/min) is shared by every player behind the same carrier CGNAT address | Confirmed (b1815fa, strict xfail); the limit is the operator's decision |
+| 26 | high | `services/gateway/connection.py:390` | Each engine command holds a dedicated Redis connection for up to 5s; exhausting the 200-connection pool makes the fail-closed rate limiter block every player on the gateway | Fixed (bee89be), deploy pending |
+| 27 | high | `services/gateway/connection.py:501` | Writer task death is never noticed; _cleanup then re-raises it and skips every unsubscribe (frozen client plus a growing hub leak) | Fixed (05c7309), deploy pending |
+| 28 | high | `services/payments/deposits.py:298` | Chapa webhook dedupe key is the transaction reference only, without the status, so a later 'success' event can be discarded as a duplicate | Fixed (73573df), deploy pending |
+| 29 | high | `services/payments/deposits.py:423` | Deposit polling has no per-item error isolation: one deposit that Chapa rejects aborts the fallback for every other player | Fixed (36ba6f5), deploy pending |
+| 30 | high | `services/payments/deposits.py:423` | poll_pending_deposits has no per-row isolation, and 'processing' deposits never expire, so one bad row stops the webhook fallback for everyone | Fixed (36ba6f5), deploy pending; expiring abandoned checkouts is a policy decision (strict xfail) |
+| 31 | high | `services/payments/payout_worker.py:407` | A payout entry without 'our_ref' crashes the except handler, and the consumer task dies silently while the process looks healthy | Fixed (08341cd), deploy pending |
 | 32 | high | `services/payments/telebirr_parser.py:83` | Parser amount regex silently truncates thousands-separated amounts (ETB 1,500.00 is read as 1) | In the Telebirr design (parser fixes) |
 | 33 | high | `services/payments/telebirr_redemption.py:152` | Telebirr redemption trusts only knowledge of the reference; whoever submits it first gets another player's deposit | Confirmed; in the Telebirr design |
-| 34 | high | `services/payments/withdrawals.py:180` | Seven-digit reference numbers truncate to six digits, so consecutive payment refs collide once payment_ref_seq reaches 1,000,000 | Not yet verified |
-| 35 | high | `services/payments/withdrawals.py:361` | sweep_stuck_approved_payouts re-enqueues payouts that are only waiting in the queue, not lost, and adds a new duplicate every tick | Not yet verified |
+| 34 | high | `services/payments/withdrawals.py:180` | Seven-digit reference numbers truncate to six digits, so consecutive payment refs collide once payment_ref_seq reaches 1,000,000 | Fixed (797fe74), deploy pending |
+| 35 | high | `services/payments/withdrawals.py:361` | sweep_stuck_approved_payouts re-enqueues payouts that are only waiting in the queue, not lost, and adds a new duplicate every tick | Fixed (c1e3077), deploy pending |
 | 36 | medium | `packages/core/bonuses.py:90` | Concurrent welcome-bonus grants create two bonuses rows backed by one ledger credit, which poisons the bonus sweep for all players | Not yet verified |
 | 37 | medium | `packages/core/keno_autoplay.py:210` | Autoplay places a ticket after the player pressed Stop: stale session snapshot and no status re-check in the placement transaction | Not yet verified |
 | 38 | medium | `packages/core/keno_autoplay.py:221` | stop_on_loss / stop_on_win routinely overshoot by one round because round N+1's autoplay tickets are placed before round N's result is recorded | Not yet verified |
@@ -101,7 +101,7 @@ the status column as items are verified or fixed.
 | 90 | low | `packages/core/sms/messages.py:147` | SMS claim query ranks the tenant's entire message history on every fetch-job, while holding the node's row lock | Not yet verified |
 | 91 | low | `services/admin/bonus_queries.py:142` | update_bonus_rule_admin fails on every numeric or date field edit (json.dumps of Decimal) | Not yet verified |
 | 92 | low | `services/admin/keno_queries.py:408` | set_current_tier_admin records a stale from_tier and counts its metric before commit | Not yet verified |
-| 93 | low | `services/admin/keno_queries.py:502` | Keno reserve deposit and withdrawal use a random uuid idempotency key, so a retried request moves money twice | Not yet verified |
+| 93 | low | `services/admin/keno_queries.py:502` | Keno reserve deposit and withdrawal use a random uuid idempotency key, so a retried request moves money twice | Fixed (24d2649), deploy pending |
 | 94 | low | `services/admin/queries.py:328` | Concurrent adjust_balance replays write two audit rows for one ledger transaction | Not yet verified |
 | 95 | low | `services/admin/queries.py:581` | void_round_admin refunds silently and mislabels a voided zero-entrant round as unchanged | Not yet verified |
 | 96 | low | `services/admin/queries.py:2239` | A Redis failure after commit turns committed money actions into HTTP 500s and drops the player notification | Not yet verified |
@@ -259,7 +259,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** high
 - **Where** `services/bot/notification_relay.py:224`
-- **Status** Not yet verified
+- **Status** Fixed (0528b20), deploy pending
 - **Trigger** run_forever always reads this consumer's pending list first (`xreadgroup(..., {STREAM: '0'}, count=10)`) and only reads new entries ('>') when nothing is pending. If process_one raises, _drain_one_user logs the error and does not XACK, so the entry stays pending. The next iteration returns the same entry, fails again, and never reaches '>'. A concrete deterministic failure: an admin saves a Bot Content override for notify.deposit_confirmed containing '{amount:,}' or a literal '{}'. bot_content_queries.py:82-83 accepts it because required_placeholders ignores format specs and unnamed fields. i18n.t()'s template.format() then raises ValueError or IndexError for every such entry. A deploy where payments sends a notify key the older bot doesn't have yet raises KeyError the same way.
 - **Impact** Every player stops getting transactional Telegram messages: deposit confirmations, withdrawal succeeded/failed/rejected, emergency-stop refunds, and campaigns. Nothing reports it; the only signal is log spam. The bot process runs this loop hot with no sleep (Redis read, DB language lookup, exception trace every pass), which also slows webhook handling for everyone. Transient DB outages cause the same spin.
 - **Suggested fix** Track failures per entry, from XPENDING's delivery count or an in-memory counter. After N attempts, XACK the entry, copy it to a dead-letter stream and bump a metric. Always read '>' as well as pending entries, or cap how many pending entries are retried per loop. Sleep with backoff after a batch that had failures. Make required_placeholders reject format specs, conversions and positional fields, and do a test render with dummy kwargs before saving an override.
@@ -268,7 +268,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** medium
 - **Where** `services/engine/commands.py:67`
-- **Status** Not yet verified
+- **Status** Fixed (bee89be), deploy pending
 - **Trigger** A player sends set_auto or drop_card frames with a fresh random integer room_id each time. connection.py:390 only checks isinstance(int). send_command XADDs to stream_key(room_id), which creates a new stream key. No engine ever reads or trims it, and it has no TTL. At about 30 frames/s per account (spread across sockets, since each socket waits 5s for a reply that never comes), that is roughly 2.6M new keys per account per day.
 - **Impact** Redis memory grows without bound. deploy/docker-compose.prod.yml sets no maxmemory, and the host also runs Postgres. The same Redis holds room locks, Keno state, rate limits, dedup keys and the payout and notification streams, so eventual Redis OOM or host memory pressure takes the whole platform down for every player.
 - **Suggested fix** Validate room_id against active rooms, from a DB-backed cache, before any XADD, as in the previous finding. As defense in depth, set maxmemory with a noeviction policy and alert on the Redis key count.
@@ -295,7 +295,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** high
 - **Where** `services/engine/keno_round_engine.py:627`
-- **Status** Not yet verified
+- **Status** Fixed (2e2e6a6), deploy pending
 - **Trigger** _spawn_settlement(R) starts _settle_and_complete. Its first fetchrow (line 353) or the 'settling' UPDATE transaction (lines 358-361) raises, for example on a stale or broken pooled connection, a 10s pool-acquire timeout, or a transient PG error on that connection only, while the main loop's own queries succeed. The except at line 391 logs and swallows the error. R stays 'draw_complete' and is no longer in _settling_round_ids. _recover_stuck_settling_rounds selects only status = 'settling', so R is never retried while the process keeps running.
 - **Impact** Every winner in R stays unpaid indefinitely while later rounds run normally. KenoRoundStuck fires at 300s, and the runbook's response is to restart keno-worker. Any later run_forever restart (a DB blip, lock loss) also runs recover_on_startup. By then R is older than 300s and not 'settling', so it goes down the refund path (previous finding) and winners permanently lose their winnings.
 - **Suggested fix** Have the sweep select non-terminal rounds with drawn_numbers set and status IN ('draw_complete','settling') that are not in _settling_round_ids, and spawn settlement for them. Alternatively, write 'settling' in the same transaction that sets 'draw_complete' in _run_draw, so no draw_complete-without-task window exists. Combine with the previous fix so such a round is never refunded.
@@ -322,7 +322,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** medium
 - **Where** `services/engine/round_engine.py:590`
-- **Status** Not yet verified
+- **Status** Fixed (66fe7e5), deploy pending
 - **Trigger** When a called number completes several auto-mark cards at once, _call_next_number awaits self.claim() for each winner in turn. Each claim runs _record_claim_attempt, an autocommit INSERT through the shared 20-connection pool, in its finally block before `now = time.monotonic()` (line 592). The first winner sets deadline = now + 50ms and starts _finalize_after_window. Winner k measures `now` only after k-1 more round trips, each with WAL fsync and possible pool wait. If the combined time passes 50ms, or the finalize task fires while the loop is awaiting (it then sets _winner_window_deadline=None), later claims fall through to 'round_already_settled'.
 - **Impact** A player whose card completed the winning pattern on exactly the same call is left out of settlement. Their whole share goes to the other winners. The code comment at lines 919-932 says same-call auto ties are meant to split, but this only holds when DB latency is low. It is worst under load, when many rooms share the pool.
 - **Suggested fix** In _call_next_number, collect every auto-mark winner for the call synchronously, then register them all in _pending_winners under one _winner_lock acquisition before any await, and write the claim_attempts rows afterwards. Alternatively, in claim(), treat any valid claim whose call index equals the first pending winner's call_index as a tie, regardless of wall-clock time.
@@ -331,7 +331,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** high
 - **Where** `services/engine/round_engine.py:1218`
-- **Status** Not yet verified
+- **Status** Fixed (b097979), deploy pending
 - **Trigger** _publish_room (bare redis.publish) is called unguarded from _run_lobby every second (line 690), from _call_next_number on every call (line 909), from _transition_to_running, and after settlement commits (lines 1121-1125). _call_next_number's pool.fetchrow (line 896) and _start_new_round/_room_is_still_active are also unguarded. A Redis connection error (0 client retries), a 10s pool-acquire timeout (worker pool max_size=20 shared by every room), or a Postgres connection error propagates up through _run_running, _run_lobby and run_forever. The finally block releases the lock and the task ends with an unobserved exception.
 - **Impact** That room's engine dies mid-round. Up to 30s later run_active_rooms runs recovery, which voids and refunds the round. Stakes come back, but a player who was about to win, or had won with the publish failing after commit, loses the win. If the failure comes after the settlement commit, players never get round_end. A Redis blip hits every room at once, because all of them publish each second, so every in-flight Bingo round across the platform is voided together and rooms go dark for up to 30s.
 - **Suggested fix** Make _publish_room best-effort: catch RedisError and log, since DB state is authoritative and state_sync recovers clients. Wrap the post-commit balance and round_end publishes the same way. Retry the per-call UPDATE with a short backoff before giving up. Keep a top-level except in run_forever that logs the exception.
@@ -340,7 +340,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** high
 - **Where** `services/engine/round_engine.py:1325`
-- **Status** Not yet verified
+- **Status** Fixed (3feea9a), deploy pending
 - **Trigger** _handle_command's final `await self._redis.publish(commands.reply_channel(request_id), ...)` sits outside its try/except, and _serve_commands only catches RedisError around xread. In this client config redis-py 8.1 connections use Retry(0 retries), so a single ConnectionError or TimeoutError raises immediately. Any Redis hiccup while a command is being answered makes the exception escape _serve_commands and the commands_task finishes. The initial xrevrange (line 1241) is also unguarded. run_forever (line 238) never checks commands_task.done(), so the round loop keeps holding the lock and cycling rounds.
 - **Impact** The room turns into a zombie. Lobby ticks and empty rounds keep running, but every take_card, drop_card, claim and set_auto from every player times out ('room_unavailable'). Manual-mode players in a live round cannot claim. The worker never reclaims the room because the engine task is still alive, and nothing monitors Bingo engines (the heartbeat alert is Keno-only). It lasts until a process restart, and one Redis blip can hit every room that is answering a command at that moment.
 - **Suggested fix** Wrap the reply publish (and the initial xrevrange) in try/except RedisError with logging, and make _serve_commands catch Exception per entry. In run_forever, supervise commands_task: if it finishes with an exception, log it and restart it, or break out so the room is released and reclaimed.
@@ -349,7 +349,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** medium
 - **Where** `services/gateway/app.py:513`
-- **Status** Not yet verified
+- **Status** Confirmed (b1815fa, strict xfail); the limit is the operator's decision
 - **Trigger** Players on the same mobile carrier egress IP (Ethio Telecom mobile data is heavily CGNAT'd; with Cloudflare in front, CF-Connecting-IP is that shared public IP) place Keno tickets by hand. The keno_ticket_ip bucket allows 20 per minute in total for that IP. For example, 8 players placing 3 tickets per round already exceed it.
 - **Impact** Legitimate players get 429 rate_limited on ticket placement because of other people's traffic. They miss rounds or retry. One heavy player behind a shared IP can block everyone else on it. The code also trusts a client-sent CF-Connecting-IP if port 8000 is reachable without going through the tunnel.
 - **Suggested fix** Drop the per-IP bucket or raise it sharply (for example hundreds per minute) and rely on the per-user bucket plus per-round caps. If a per-IP guard is still wanted, apply it only to new or unverified accounts. Only honor CF-Connecting-IP when the request comes from the tunnel.
@@ -358,7 +358,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** medium
 - **Where** `services/gateway/connection.py:390`
-- **Status** Not yet verified
+- **Status** Fixed (bee89be), deploy pending
 - **Trigger** send_command (services/engine/commands.py:64) opens a new pubsub, and so takes a pool connection, for every command and holds it until the reply or the 5s timeout. The pool is a plain ConnectionPool with max_connections=200, which raises MaxConnectionsError immediately when full. Non-malicious trigger: an engine-worker crash or restart leaves busy rooms without an owner, and ~200 players tapping take_card within 5s exhaust the pool. Malicious trigger: _run_action accepts any integer room_id without checking that the room exists or is active, and drop_card/set_auto have no per-action bucket, so one Telegram account with about 150 open sockets (there is no per-user socket cap) sending drop_card to room_id=999999 every 5s stays inside WS_MESSAGES and pins about 150 connections. Two accounts go past 200.
 - **Impact** Once the pool is empty, rate_limit.allow_with_retry_after catches MaxConnectionsError and fails closed. Every player on that gateway gets 'Slow down.' for every WS frame and 429 rate_limited on /api/keno/tickets, and deposit and Telebirr rate checks also refuse. send_command's subscribe raises MaxConnectionsError, which is not a CommandTimeout, so affected sockets are torn down. A single room's outage or one or two abusive accounts takes the whole gateway down for everyone.
 - **Suggested fix** Reject room_ids not in a cached set of active rooms before calling send_command. Add per-action buckets for drop_card and set_auto. Cap in-flight commands per user and per process with a semaphore that sits well below max_connections. Give rate limiting its own small Redis client so command traffic cannot starve it. Longer term, use one shared reply subscriber per gateway (psubscribe cmdreply:<gateway-id>:*) instead of a pubsub per command.
@@ -367,7 +367,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** high
 - **Where** `services/gateway/connection.py:501`
-- **Status** Not yet verified
+- **Status** Fixed (05c7309), deploy pending
 - **Trigger** Case 1: the writer task (created at line 92) raises. Examples: build_state_sync hits a DB error or pool-acquire timeout after a queue overflow; or send_text raises WebSocketDisconnect(1006) because uvicorn raised ClientDisconnected while the writer was blocked in drain for a slow or backgrounded mobile client. The reader loop keeps running and nothing observes the dead writer. Case 2: when the socket later closes, _cleanup calls cancel() on the already-finished task and then `await self._writer_task` re-raises the stored exception. Only CancelledError is suppressed, so unsubscribe_room/unsubscribe_user/unsubscribe_keno and the metric decrements at lines 503-509 never run.
 - **Impact** A player whose writer died sees a frozen board: no calls, no round_end, no balance updates. Their pings still get pongs, so the client never reconnects, and they can keep buying cards. Each such connection leaves its ConnectionQueue in _room_subscribers, _user_subscribers and _keno_subscribers for the life of the process. Every keno:live message (about 50 per round) is offered to every leaked queue, and each leaked queue holds up to 100 messages. Gateway memory and listener CPU grow with ordinary mobile churn, and the gateway_connections and keno_ws_connections gauges only ever increase.
 - **Suggested fix** In _writer_loop, catch Exception, log it and close the websocket (code 1011) so the client reconnects. In _cleanup, use `with contextlib.suppress(asyncio.CancelledError, Exception)` around the await, and put the unsubscribes and metric decrements in a try/finally so they always run.
@@ -376,7 +376,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** low
 - **Where** `services/payments/deposits.py:298`
-- **Status** Not yet verified
+- **Status** Fixed (73573df), deploy pending
 - **Trigger** chapa.verify_webhook sets event_id=str(reference) (chapa.py). _apply_confirmed_status inserts payment_events(provider, event_id) before it looks at the status, and commits that row even for 'pending' and 'failed' outcomes. Suppose Chapa sends a 'pending' or 'failed'/'cancelled' webhook and then a 'success' webhook for the same reference, for example after a failed first attempt and a retry on the same checkout. The success event hits ON CONFLICT, and the function returns 'duplicate' without crediting. In the 'failed' case the row is already status 'failed', and poll_pending_deposits only scans 'processing', so the fallback never rescues it either. The poll path puts the status into its key (poll:{ref}:{status}), but the webhook path does not.
 - **Impact** The player paid through Chapa but is never credited. Only run_provider_reconciliation's error log (status_disagreement, within 2h) would surface it, and that needs manual admin action.
 - **Suggested fix** Include the status in the webhook event_id (for example f"{reference}:{status}"), or record payment_events only for events that change state. Also let the poll or reconciliation path re-verify recently 'failed' Chapa deposits.
@@ -385,7 +385,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** medium
 - **Where** `services/payments/deposits.py:423`
-- **Status** Not yet verified
+- **Status** Fixed (36ba6f5), deploy pending
 - **Trigger** poll_pending_deposits loops over every 'processing' Chapa deposit with no try/except. ChapaProvider.fetch_status (chapa.py:208-214) raises when Chapa returns a non-'success' envelope for a tx_ref (for example an abandoned or invalid checkout), when the status is not recognised (_map_status raises ValueError), when a 404 or 5xx body is not JSON (response.json() is called before the 404 check), or when the amount is malformed. The query has no ORDER BY, and 'processing' deposits never expire, so the same bad row can abort every 30-second pass. run_provider_reconciliation (deposits.py:566-567) has the same pattern.
 - **Impact** Players whose Chapa webhook was lost are never credited by the polling fallback, and their paid deposits stay uncredited indefinitely because another player's deposit sits ahead of theirs. The hourly reconciliation can also abort and stop surfacing mismatches.
 - **Suggested fix** Wrap each row's fetch_status and _apply_confirmed_status in try/except and log per our_ref. Add ORDER BY updated_at. In chapa.fetch_status, check the status code before calling response.json() and handle non-JSON bodies. Consider expiring old abandoned checkouts.
@@ -394,7 +394,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** medium
 - **Where** `services/payments/deposits.py:423`
-- **Status** Not yet verified
+- **Status** Fixed (36ba6f5), deploy pending; expiring abandoned checkouts is a policy decision (strict xfail)
 - **Trigger** Any Chapa deposit row in status 'processing' where provider.fetch_status() raises every time. Examples: _map_status raises ValueError for a Chapa status outside its 5-entry map (such as 'refunded' or 'reversed'); Chapa returns a non-'success' envelope, which may include an abandoned or unpaid checkout; data.amount is null. The loop has no try/except, so the exception leaves poll_pending_deposits. _run_periodic_sweep logs it and sleeps 30s. The next pass selects the same rows (no ORDER BY, so in practice the same order) and fails at the same row again. Nothing ever moves such a row out of 'processing', so this repeats indefinitely. Even when nothing raises, every abandoned checkout is re-polled every 30s forever: one serial HTTP call each, with a 15s timeout.
 - **Impact** Every deposit that sorts after the poisoned row is never credited by the fallback. A player whose Chapa webhook was lost stays uncredited indefinitely, with only a log line and an hourly reconciliation log as signals. Money is not lost, but players lose it from their view and support load grows. Abandoned checkouts also pile up the Chapa calls made each pass, and they keep counting toward the player's daily deposit cap because 'processing' is in the cap's status list (deposits.py:155).
 - **Suggested fix** Wrap each row's fetch_status and _apply_confirmed_status in try/except Exception: log it and continue, while letting CancelledError through. Add ORDER BY updated_at and a LIMIT. Age out 'processing' rows older than Chapa's checkout lifetime, for example by marking them 'cancelled' after a final verify, so they stop being polled and stop counting toward the cap.
@@ -403,7 +403,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** high
 - **Where** `services/payments/payout_worker.py:407`
-- **Status** Not yet verified
+- **Status** Fixed (08341cd), deploy pending
 - **Trigger** Any entry in the 'payouts' stream that lacks an our_ref field, for example an operator re-enqueueing by hand with only payment_id, or a future producer. Line 405 raises KeyError while building the arguments. The except handler at line 407 then evaluates fields['our_ref'] again, raising KeyError inside the handler, which escapes the for loop and the while loop and ends run_forever.
 - **Impact** consumer_task (line 488) is never supervised: main_async only awaits stop_event. The process keeps running its sweeps and the metrics server, and payout-worker has no healthcheck, so Docker never restarts it. All automatic payouts stop for every player. Meanwhile sweep_stuck_approved_payouts keeps adding duplicates for every approved row, which later feeds the re-dispatch bug. The bad entry is never acked, so after a manual restart the first read of the pending list returns it and kills the consumer again.
 - **Suggested fix** Use fields.get('our_ref'). If it is missing, log and xack the entry, or move it to a dead-letter stream. Add a done-callback on consumer_task that logs the exception and sets stop_event, so the container exits and restart: unless-stopped brings it back.
@@ -430,7 +430,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** high
 - **Where** `services/payments/withdrawals.py:180`
-- **Status** Not yet verified
+- **Status** Fixed (797fe74), deploy pending
 - **Trigger** lpad(nextval('payment_ref_seq')::text, 6, '0') truncates longer strings. Verified in this Postgres: lpad('1234567',6,'0') and lpad('1234568',6,'0') both return '123456'. The sequence is shared by withdrawals (withdrawals.py:180), manual deposits (manual.py:94), Chapa deposits (deposits.py:189) and Telebirr redemptions (telebirr_redemption.py:209), and every checkout attempt uses a value, including abandoned ones. Once the value passes 999,999, the ten values 1234560..1234569 all produce WD-/DEP-YYYY-123456.
 - **Impact** Most new deposits and withdrawals fail with a UniqueViolation on payments_our_ref_key, which is a 500 for every player. On the withdrawal path, ledger.post with idempotency_key=our_ref first returns the earlier withdrawal's transaction without moving any money; only the payments UNIQUE constraint and the resulting rollback prevent an approved payout with nothing locked.
 - **Suggested fix** Stop truncating: use nextval(...)::text with a zero-pad that is only a minimum width, for example CASE or to_char(nextval, 'FM000000') (which widens past 6 digits), or simply lpad(...,10,'0'). Apply it to all four call sites.
@@ -439,7 +439,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** high, **fix size** small, **finder confidence** high
 - **Where** `services/payments/withdrawals.py:361`
-- **Status** Not yet verified
+- **Status** Fixed (c1e3077), deploy pending
 - **Trigger** The payout worker handles entries one at a time, each Chapa call can take up to 15s per httpx phase, and batches are 10 entries. Any backlog that keeps a row at status='approved' for more than 60s after its insert or approval (for example a payday burst, a slow or unreachable Chapa, or a dead consumer task while the sweeps keep running in the same process) makes the sweep XADD another entry for that row. It adds one more on every 60s tick while the row stays 'approved'. A narrow race also exists: the sweep can SELECT the row just before process_one's first transaction commits 'processing'.
 - **Impact** Once the first entry moves the row to 'processing', every duplicate reaches create_payout again (previous finding), so ordinary backlog becomes a double payout or a refund of a transfer that was already sent. The stream also grows without bound. This is the most likely everyday trigger of the money loss.
 - **Suggested fix** Record when the row was enqueued or dispatched (for example an enqueued_at column, re-enqueued only when it is older than a threshold well above the worst-case backlog), or check XPENDING or the stream for an existing entry for this our_ref. Together with the atomic approved->processing claim in process_one, duplicates then become harmless.
@@ -961,7 +961,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** low, **fix size** small, **finder confidence** medium
 - **Where** `services/admin/keno_queries.py:502`
-- **Status** Not yet verified
+- **Status** Fixed (24d2649), deploy pending
 - **Trigger** idempotency_key=f"admin-reserve-deposit-{uuid4()}" (and admin-reserve-withdrawal at line 587) is new on every call. A browser or proxy retry, or a resubmit after a timeout, posts a second keno_reserve_deposit or withdrawal. The confirm() dialog in overview.js blocks only a literal double-click.
 - **Impact** The reserve ledger balance drifts from what the operator actually funded. The reserve drives tier promotion and the 10%-of-reserve round exposure cap, so an overstated reserve allows exposure that isn't backed. A duplicated withdrawal understates it.
 - **Suggested fix** Take a client request_id as adjust_balance does and key on admin-reserve-{direction}-{admin_id}-{request_id}.
