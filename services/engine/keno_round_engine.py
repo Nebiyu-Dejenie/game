@@ -702,9 +702,27 @@ class KenoRoundEngine:
         Every ticket refunded exactly (kind="keno_refund", reversing the
         same stake split _seed/place_ticket originally posted), the
         round marked failed, never left ambiguous."""
-        logger.warning("keno_round_marked_failed", round_id=round_id, reason=reason)
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                # The round row is locked before its tickets are read.
+                # place_ticket() holds this same lock from its betting_open
+                # check to its commit, so a placement in flight commits
+                # first and its ticket is refunded below, and any later one
+                # finds the round no longer betting_open. Reading the
+                # tickets first left an in-flight ticket 'pending' on a
+                # 'failed' round, charged and never settled or refunded
+                # (platform audit, 2026-09-29).
+                round_row = await conn.fetchrow(
+                    "SELECT status, drawn_numbers FROM keno_rounds WHERE id = $1 FOR UPDATE", round_id
+                )
+                if round_row is None or round_row["status"] in TERMINAL_STATUSES:
+                    return
+                if round_row["drawn_numbers"] is not None:
+                    # Once drawn, a round is settled, never refunded (see
+                    # recover_on_startup()).
+                    logger.error("keno_round_refund_refused_after_draw", round_id=round_id, reason=reason)
+                    return
+                logger.warning("keno_round_marked_failed", round_id=round_id, reason=reason)
                 tickets = await conn.fetch(
                     "SELECT id, user_id, stake, stake_txn_id FROM keno_tickets WHERE round_id = $1 AND status = 'pending' FOR UPDATE",
                     round_id,

@@ -656,3 +656,90 @@ async def test_recovery_settles_an_old_round_whose_numbers_were_already_drawn(
     assert ticket_row["payout"] == Decimal("34.00")  # 10 x 3.40, not the 10.00 stake back
     balance_after = await ledger.user_balance_snapshot(pool, user_id)
     assert Decimal(balance_after["cash"]) - Decimal(balance_before["cash"]) == Decimal("34.00")
+
+
+async def _wait_for_lock_waiters(pool: asyncpg.Pool, count: int, *, timeout: float = 10.0) -> None:
+    async def _enough_waiting() -> bool:
+        async with pool.acquire() as conn:
+            waiting = await conn.fetchval(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            )
+        return waiting >= count
+
+    await _wait_until(_enough_waiting, timeout=timeout)
+
+
+async def test_a_ticket_placed_while_a_stuck_round_is_refunded_is_never_left_pending(
+    pool: asyncpg.Pool, redis
+) -> None:
+    """While the worker is down its round stays 'betting_open', so the
+    gateway keeps taking tickets for it. When the worker returns it refunds
+    the stuck round. A ticket whose placement is still in flight when the
+    refund reads the round's tickets must end up refunded, or be rejected.
+    It must never be left 'pending' on a 'failed' round, which nothing ever
+    settles or refunds.
+
+    The placement is paused mid-transaction, after it has locked the round,
+    by holding the player's balance row; the refund runs meanwhile."""
+    from packages.core import keno_tickets
+
+    async with pool.acquire() as conn:
+        await _seed_fast_config_and_tier(conn)
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+        config_id = await conn.fetchval("SELECT id FROM keno_configs ORDER BY id DESC LIMIT 1")
+        tier_id = await conn.fetchval("SELECT id FROM keno_risk_tiers ORDER BY id DESC LIMIT 1")
+        server_seed = keno.generate_server_seed()
+        round_id = await conn.fetchval(
+            """
+            INSERT INTO keno_rounds (seq, status, config_id, tier_id, server_seed, server_seed_hash, scheduled_at)
+            VALUES ((SELECT COALESCE(MAX(seq),0)+1 FROM keno_rounds), 'betting_open', $1, $2, $3, $4,
+                    now() - interval '3600 seconds')
+            RETURNING id
+            """,
+            config_id, tier_id, server_seed, keno.server_seed_hash(server_seed),
+        )
+        cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
+
+    blocker = await pool.acquire()
+    engine = KenoRoundEngine(pool, redis)
+    try:
+        blocker_txn = blocker.transaction()
+        await blocker_txn.start()
+        await blocker.execute("SELECT 1 FROM account_balances WHERE account_id = $1 FOR UPDATE", cash.id)
+
+        placement = asyncio.create_task(
+            keno_tickets.place_ticket(
+                pool, redis, user_id=user_id, picks=[7], stake=Decimal("10.00"), idempotency_key=str(uuid.uuid4())
+            )
+        )
+        await _wait_for_lock_waiters(pool, 1)  # the placement, holding the round row, waits on the balance
+        refund = asyncio.create_task(engine._fail_and_refund_round(round_id, reason="stuck_round_recovery"))
+        await _wait_for_lock_waiters(pool, 2)  # the refund now waits on the round row too
+        await blocker_txn.rollback()
+        placement_result = (await asyncio.gather(placement, return_exceptions=True))[0]
+        await refund
+    finally:
+        await pool.release(blocker)
+
+    async with pool.acquire() as conn:
+        round_status = await conn.fetchval("SELECT status FROM keno_rounds WHERE id = $1", round_id)
+        ticket_statuses = [
+            r["status"] for r in await conn.fetch("SELECT status FROM keno_tickets WHERE round_id = $1", round_id)
+        ]
+        cash_balance = await ledger.balance(conn, cash.id)
+    assert round_status == "failed"
+    assert "pending" not in ticket_statuses, f"placement={placement_result!r}, tickets={ticket_statuses}"
+    assert cash_balance == Decimal("1000.00")  # refunded, or never charged
+
+
+async def test_the_refund_path_refuses_a_round_whose_numbers_were_drawn(pool: asyncpg.Pool, redis) -> None:
+    async with pool.acquire() as conn:
+        round_id, ticket_id, _ = await _seed_settling_round_with_one_ticket(conn, scheduled_at_offset_seconds=3600)
+        await conn.execute("UPDATE keno_rounds SET status = 'draw_complete' WHERE id = $1", round_id)
+
+    await KenoRoundEngine(pool, redis)._fail_and_refund_round(round_id, reason="stuck_round_recovery")
+
+    async with pool.acquire() as conn:
+        round_status = await conn.fetchval("SELECT status FROM keno_rounds WHERE id = $1", round_id)
+        ticket_status = await conn.fetchval("SELECT status FROM keno_tickets WHERE id = $1", ticket_id)
+    assert (round_status, ticket_status) == ("draw_complete", "pending")
