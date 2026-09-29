@@ -427,18 +427,26 @@ async def poll_pending_deposits(
     credited = 0
     for row in rows:
         our_ref = row["our_ref"]
-        result = await provider.fetch_status(our_ref)
-        outcome = await _apply_confirmed_status(
-            pool,
-            redis,
-            our_ref=our_ref,
-            event_id=f"poll:{our_ref}:{result.status}",
-            provider_name=provider.name,
-            status=result.status,
-            amount=result.amount,
-            provider_ref=result.provider_ref or our_ref,
-            raw=result.raw,
-        )
+        # One deposit Chapa can't answer for (fetch_status raises on an
+        # unknown status, a non-'success' envelope, a bad body) must not end
+        # the pass: that row stays 'processing' and is selected again every
+        # pass, so every deposit after it would never be credited.
+        try:
+            result = await provider.fetch_status(our_ref)
+            outcome = await _apply_confirmed_status(
+                pool,
+                redis,
+                our_ref=our_ref,
+                event_id=f"poll:{our_ref}:{result.status}",
+                provider_name=provider.name,
+                status=result.status,
+                amount=result.amount,
+                provider_ref=result.provider_ref or our_ref,
+                raw=result.raw,
+            )
+        except Exception:
+            logger.exception("deposit_poll_failed", our_ref=our_ref, provider=provider.name)
+            continue
         if outcome == "credited":
             credited += 1
     return credited
