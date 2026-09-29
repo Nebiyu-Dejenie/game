@@ -612,3 +612,47 @@ async def test_oldest_nonterminal_round_gauge_is_zero_when_nothing_is_stuck(pool
     await engine._update_oldest_nonterminal_round_gauge()
 
     assert metrics.keno_oldest_nonterminal_round_age_seconds._value.get() == 0.0
+
+
+# --- Stuck-round recovery after the draw (platform audit, 2026-09-29) --------
+
+
+@pytest.mark.parametrize("stuck_status", ["drawing", "draw_complete"])
+async def test_recovery_settles_an_old_round_whose_numbers_were_already_drawn(
+    pool: asyncpg.Pool, redis, stuck_status: str
+) -> None:
+    """Once drawn_numbers is persisted the result exists and players have
+    watched it being revealed, so recovery must settle the round however old
+    it is. Refunding it instead takes a winner's payout away and hands them
+    their stake back. The ticket here picks the first drawn number, so it
+    won."""
+    async with pool.acquire() as conn:
+        round_id, ticket_id, user_id = await _seed_settling_round_with_one_ticket(
+            conn, scheduled_at_offset_seconds=3600
+        )
+        drawn = await conn.fetchval("SELECT drawn_numbers FROM keno_rounds WHERE id = $1", round_id)
+        await conn.execute(
+            "UPDATE keno_ticket_selections SET number = $2 WHERE ticket_id = $1", ticket_id, drawn[0]
+        )
+        await conn.execute(
+            "UPDATE keno_rounds SET status = $2, reveal_index = $3 WHERE id = $1",
+            round_id, stuck_status, 5 if stuck_status == "drawing" else len(drawn),
+        )
+    balance_before = await ledger.user_balance_snapshot(pool, user_id)
+
+    engine = KenoRoundEngine(pool, redis)
+    assert await engine._lock.acquire()  # the reveal loop only runs while the lock is held
+    try:
+        recovered = await engine.recover_on_startup()
+        assert round_id in recovered
+        await engine._drain_settlement_tasks()
+    finally:
+        await engine._lock.release()
+
+    async with pool.acquire() as conn:
+        round_row = await conn.fetchrow("SELECT status FROM keno_rounds WHERE id = $1", round_id)
+        ticket_row = await conn.fetchrow("SELECT status, payout FROM keno_tickets WHERE id = $1", ticket_id)
+    assert (round_row["status"], ticket_row["status"]) == ("completed", "won")
+    assert ticket_row["payout"] == Decimal("34.00")  # 10 x 3.40, not the 10.00 stake back
+    balance_after = await ledger.user_balance_snapshot(pool, user_id)
+    assert Decimal(balance_after["cash"]) - Decimal(balance_before["cash"]) == Decimal("34.00")

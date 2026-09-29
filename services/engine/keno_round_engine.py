@@ -575,7 +575,7 @@ class KenoRoundEngine:
         recovered: list[int] = []
         async with self._pool.acquire() as conn:
             stuck_rows = await conn.fetch(
-                "SELECT id, status, betting_opened_at, betting_closed_at, scheduled_at "
+                "SELECT id, status, betting_opened_at, betting_closed_at, scheduled_at, drawn_numbers "
                 "FROM keno_rounds WHERE status NOT IN ('completed', 'failed', 'voided')"
             )
         for row in stuck_rows:
@@ -589,7 +589,13 @@ class KenoRoundEngine:
             # regardless of whether it actually won, which is wrong for
             # any ticket that did (a real bug this pass caught while
             # wiring up the periodic settling-recovery sweep below).
-            if row["status"] == "settling":
+            #
+            # The same goes for any round whose drawn_numbers are persisted
+            # ('drawing', 'draw_complete'): the result exists and players
+            # have watched it being revealed, so refunding would take a
+            # winner's payout away (platform audit, 2026-09-29). Resuming
+            # finishes the reveal from reveal_index and settles.
+            if row["status"] == "settling" or row["drawn_numbers"] is not None:
                 await self._resume_round(row)
                 recovered.append(row["id"])
                 continue
