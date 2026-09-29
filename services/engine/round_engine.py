@@ -43,6 +43,12 @@ logger = structlog.get_logger()
 
 WINNER_TIE_WINDOW_SECONDS = 0.05
 
+# How many times, in all, _call_next_number() tries its per-call UPDATE
+# before a Postgres error ends the room's engine, sleeping
+# CALL_UPDATE_RETRY_BACKOFF_SECONDS x attempt between tries.
+CALL_UPDATE_ATTEMPTS = 3
+CALL_UPDATE_RETRY_BACKOFF_SECONDS = 0.5
+
 
 @dataclass(frozen=True)
 class RoomConfig:
@@ -288,6 +294,13 @@ class RoundEngine:
                             await self._start_new_round()
                             self._round_active_event.set()
                 await self._run_lobby()
+        except Exception:
+            # Whatever still escapes ends this room's engine. Said here, not
+            # left to an exception nobody retrieves from the task: the
+            # worker's next poll reclaims the room, and recovery refunds a
+            # round left in flight.
+            logger.exception("engine_run_forever_failed", room_id=self._room.id, round_id=self._round_id)
+            raise
         finally:
             commands_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -761,12 +774,7 @@ class RoundEngine:
             # transaction has already committed, so sequential ordering
             # here buys nothing but delay for a room with several
             # entrants refunded at once. Concurrent, same pattern.
-            await asyncio.gather(
-                *(
-                    ledger.publish_balance_update(self._pool, self._redis, refunded_user_id)
-                    for refunded_user_id in refunded_user_ids
-                )
-            )
+            await self._push_balance_updates(refunded_user_ids)
             # A real production incident, caught on video: a player who
             # took a card, then just waited (never touching the app
             # again), saw the lobby countdown hit 0 and freeze there
@@ -886,12 +894,7 @@ class RoundEngine:
             # code-review pass caught both of this file's refund-then
             # -publish loops as the same plain sequential for/await
             # already fixed for _settle_with_winners()'s winner payouts.
-            await asyncio.gather(
-                *(
-                    ledger.publish_balance_update(self._pool, self._redis, refunded_user_id)
-                    for refunded_user_id in refunded_user_ids
-                )
-            )
+            await self._push_balance_updates(refunded_user_ids)
             await self._pool.execute(
                 "UPDATE rounds SET server_seed = $2 WHERE id = $1", round_id, self._server_seed
             )
@@ -934,12 +937,33 @@ class RoundEngine:
         self._called.add(number)
         metrics.engine_calls_total.inc()
 
-        row = await self._pool.fetchrow(
-            "UPDATE rounds SET call_index = $1 WHERE id = $2 AND status = 'running' "
-            "RETURNING id",
-            self._call_index,
-            round_id,
-        )
+        # Retried on a transient Postgres error (a dropped pooled
+        # connection, an acquire timeout under load) rather than raised
+        # at once: an exception out of here ends this room's engine
+        # mid-round, and recovery then voids and refunds the round, taking
+        # the win from whoever was about to complete a pattern (platform
+        # audit, 2026-09-29). Repeating it is harmless -- it writes the
+        # same call_index each time.
+        for attempt in range(1, CALL_UPDATE_ATTEMPTS + 1):
+            try:
+                row = await self._pool.fetchrow(
+                    "UPDATE rounds SET call_index = $1 WHERE id = $2 AND status = 'running' "
+                    "RETURNING id",
+                    self._call_index,
+                    round_id,
+                )
+                break
+            except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
+                if attempt == CALL_UPDATE_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "call_index_update_failed_retrying",
+                    room_id=self._room.id,
+                    round_id=round_id,
+                    attempt=attempt,
+                    exc_info=True,
+                )
+                await asyncio.sleep(CALL_UPDATE_RETRY_BACKOFF_SECONDS * attempt)
         if row is None:
             logger.info(
                 "call_next_number_stopped_round_no_longer_running",
@@ -1159,9 +1183,7 @@ class RoundEngine:
         # balance push. Concurrent instead, the same pattern already used
         # elsewhere in this codebase for independent per-item work
         # (services/gateway/queries.py, services/bot/notification_relay.py).
-        await asyncio.gather(
-            *(ledger.publish_balance_update(self._pool, self._redis, w.user_id) for w in winners)
-        )
+        await self._push_balance_updates([w.user_id for w in winners])
 
         await self._publish_room(
             {
@@ -1256,7 +1278,35 @@ class RoundEngine:
         )
 
     async def _publish_room(self, message: dict[str, object]) -> None:
-        await self._redis.publish(f"room:{self._room.id}", json.dumps(message))
+        # Best-effort: Postgres holds the round, and a client that missed a
+        # broadcast gets the current state from its next state_sync. A
+        # Redis error here used to raise out of the round loop -- every
+        # room publishes each lobby tick and each call, so one Redis blip
+        # ended every room's engine at once, and recovery voided each
+        # in-flight round (platform audit, 2026-09-29).
+        try:
+            await self._redis.publish(f"room:{self._room.id}", json.dumps(message))
+        except redis.exceptions.RedisError:
+            logger.warning(
+                "room_publish_failed", room_id=self._room.id, message_type=message.get("t"), exc_info=True
+            )
+
+    async def _push_balance_updates(self, user_ids: list[int]) -> None:
+        """Pushes each user's balance after a payout or refund has
+        committed: concurrently (see _settle_with_winners()) and
+        best-effort, like _publish_room(). The money has already moved; a
+        failed push used to raise out of the round loop instead, ending
+        the engine before round_end went out."""
+
+        async def _push(user_id: int) -> None:
+            try:
+                await ledger.publish_balance_update(self._pool, self._redis, user_id)
+            except Exception:
+                logger.warning(
+                    "balance_update_publish_failed", room_id=self._room.id, user_id=user_id, exc_info=True
+                )
+
+        await asyncio.gather(*(_push(user_id) for user_id in user_ids))
 
     # --- gateway command channel -----------------------------------------
     #
