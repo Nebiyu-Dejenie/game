@@ -1,0 +1,29 @@
+# Rules that only make sense where something actually runs the services
+# (production), on top of alerts.yml.
+
+groups:
+  - name: jobingo-prod
+    rules:
+      - alert: ServiceDown
+        # alerts.yml has no rule for a dead process. KenoEngineHeartbeatMissing
+        # (increase(keno_rounds_created_total[5m]) == 0) returns nothing at
+        # all once the keno-worker stops answering scrapes, so it can't fire
+        # for the failure it exists for. A scrape of a stopped container
+        # fails (up == 0), which this catches for every service.
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.job }} has not answered a metrics scrape for 2 minutes"
+
+      - alert: Watchdog
+        # Always firing. Alertmanager forwards it to an external heartbeat
+        # check every few minutes; when the pings stop (server, network,
+        # Prometheus or Alertmanager down), that service alerts instead.
+        # Without it, a dead monitoring stack looks exactly like "no alerts".
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Dead man's switch: the alerting pipeline is working"

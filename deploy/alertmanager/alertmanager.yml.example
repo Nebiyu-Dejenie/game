@@ -1,0 +1,36 @@
+# Copy to deploy/alertmanager/alertmanager.yml (gitignored, like
+# deploy/.env) and fill in the three values marked REPLACE. The bot token
+# goes in deploy/alertmanager/telegram-bot-token (also gitignored), one
+# line, no quotes.
+#
+# - chat_id: the Telegram chat that receives alerts (a private ops group;
+#   add the bot to it). Group ids are negative, e.g. -1001234567890.
+# - bot: a separate ops bot from @BotFather, so alert traffic never
+#   shares rate limits with, or depends on, the player-facing bot.
+# - Watchdog url: a healthchecks.io (or similar) check with a 5-minute
+#   period; it alerts on its own when Alertmanager stops pinging it.
+
+route:
+  receiver: telegram
+  group_by: ["alertname", "job"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 3h
+  routes:
+    - matchers: ['alertname = "Watchdog"']
+      receiver: heartbeat
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 1m
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token_file: /etc/alertmanager/telegram-bot-token
+        chat_id: 0  # REPLACE with the ops chat id
+        parse_mode: HTML
+        send_resolved: true
+  - name: heartbeat
+    webhook_configs:
+      - url: "https://hc-ping.com/REPLACE-with-check-uuid"
+        send_resolved: false

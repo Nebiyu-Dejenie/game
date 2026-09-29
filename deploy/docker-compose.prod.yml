@@ -287,6 +287,48 @@ services:
       - bot
       - sms
 
+  # Monitoring (2026-09-29). Until now production ran no Prometheus, so
+  # none of deploy/prometheus/alerts.yml ever fired there, the Keno
+  # stuck-round and engine-heartbeat alerts included. Profile-gated so it
+  # starts only on purpose, once deploy/alertmanager/alertmanager.yml and
+  # its bot-token file exist (see alertmanager.yml.example):
+  #   docker compose -f deploy/docker-compose.prod.yml --profile monitoring up -d prometheus alertmanager
+  # Both UIs listen on the server's loopback only; reach them with
+  # `ssh -L 9090:localhost:9090 -L 9093:localhost:9093 zemen-game-server`.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./prometheus/alerts.prod.yml:/etc/prometheus/alerts.prod.yml:ro
+      - jobingo_prod_prometheus_data:/prometheus
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/telegram-bot-token:/etc/alertmanager/telegram-bot-token:ro
+      - jobingo_prod_alertmanager_data:/alertmanager
+
 volumes:
   jobingo_prod_postgres_data:
   jobingo_prod_redis_data:
+  jobingo_prod_prometheus_data:
+  jobingo_prod_alertmanager_data:

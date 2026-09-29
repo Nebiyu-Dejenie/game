@@ -40,3 +40,7 @@ node_modules/
 /deploy/cloudflared/config.yml
 /deploy/cloudflared/tunnel-credentials.json
 
+
+# Real Alertmanager receivers -- deploy/alertmanager/alertmanager.yml.example
+/deploy/alertmanager/alertmanager.yml
+/deploy/alertmanager/telegram-bot-token

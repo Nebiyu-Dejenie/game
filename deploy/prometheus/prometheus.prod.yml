@@ -1,0 +1,38 @@
+# Production scrape config (deploy/docker-compose.prod.yml, profile
+# "monitoring"). Same jobs as the dev prometheus.yml, but each target is
+# the container's Compose service name on the stack's own network instead
+# of host.docker.internal. Until 2026-09-29 production ran no Prometheus
+# at all, so none of the rules in alerts.yml could fire there.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+  - /etc/prometheus/alerts.prod.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: gateway
+    static_configs: [{targets: ["gateway:8000"]}]
+  - job_name: admin
+    static_configs: [{targets: ["admin:8001"]}]
+  - job_name: payments
+    static_configs: [{targets: ["payments:8002"]}]
+  - job_name: bot
+    static_configs: [{targets: ["bot:8003"]}]
+  - job_name: engine-worker
+    static_configs: [{targets: ["engine-worker:8004"]}]
+  - job_name: payout-worker
+    static_configs: [{targets: ["payout-worker:8005"]}]
+  - job_name: sms
+    static_configs: [{targets: ["sms:8006"]}]
+  - job_name: simulated-players-worker
+    static_configs: [{targets: ["simulated-players-worker:8007"]}]
+  - job_name: keno-worker
+    static_configs: [{targets: ["keno-worker:8008"]}]

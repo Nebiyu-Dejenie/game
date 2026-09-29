@@ -15,6 +15,7 @@ connection, so it needs no chaos_infra-style isolation.
 """
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -206,6 +207,40 @@ async def test_prod_compose_cloudflared_service_is_valid_and_always_on():
         assert "/etc/cloudflared/config.yml" in full_config
         assert "/etc/cloudflared/tunnel-credentials.json" in full_config
         assert "tunnel" in full_config and "--config" in full_config
+    finally:
+        env_path.unlink(missing_ok=True)
+        if had_existing_env:
+            backup_path.rename(env_path)
+
+
+async def test_prod_compose_monitoring_is_valid_profile_gated_and_loopback_only():
+    # Prometheus and Alertmanager (2026-09-29): production never ran
+    # either, so no alert rule could fire there. They start only with
+    # --profile monitoring, once the gitignored alertmanager.yml exists,
+    # and their UIs must not be reachable from the LAN.
+    env_path = DEPLOY_DIR / ".env"
+    backup_path = env_path.with_suffix(".env.bak-test")
+    had_existing_env = env_path.exists()
+    if had_existing_env:
+        env_path.rename(backup_path)
+    try:
+        env_path.write_text("POSTGRES_PASSWORD=test-dummy\nPHONE_ENCRYPTION_KEY=" + "0" * 64 + "\n")
+
+        default_services = await _run(
+            "docker", "compose", "-f", str(DEPLOY_DIR / "docker-compose.prod.yml"), "config", "--services",
+        )
+        assert not {"prometheus", "alertmanager"} & set(default_services.split())
+
+        gated = await _run(
+            "docker", "compose", "-f", str(DEPLOY_DIR / "docker-compose.prod.yml"),
+            "--profile", "monitoring", "config", "--format", "json",
+        )
+        services = json.loads(gated)["services"]
+        for name, port in (("prometheus", "9090"), ("alertmanager", "9093")):
+            bindings = [(b.get("host_ip"), b.get("published")) for b in services[name]["ports"]]
+            assert bindings == [("127.0.0.1", port)], (name, bindings)
+        mounts = {v["target"] for v in services["prometheus"]["volumes"]}
+        assert {"/etc/prometheus/alerts.yml", "/etc/prometheus/alerts.prod.yml"} <= mounts
     finally:
         env_path.unlink(missing_ok=True)
         if had_existing_env:
