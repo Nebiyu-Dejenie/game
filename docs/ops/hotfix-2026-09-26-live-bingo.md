@@ -1,7 +1,7 @@
 # Hotfix runbook: live Bingo fixes (2026-09-26)
 
-**Status: awaiting operator approval. Nothing is deployed.** Written for the
-operator to approve and for whoever runs it. Operator's instruction: these
+**Status: deployed 2026-09-29.** The operator approved ("deploy") on
+2026-09-29. Two steps, both verified; see "Deploy record" at the end. Operator's instruction: these
 fixes go out as soon as the server is reachable, before anything else,
 without waiting for the VPS migration.
 
@@ -111,3 +111,53 @@ Roll back on tracebacks or restart loops in the four containers, a failing
 
 Delete the leftover `~/apps/igame/verify_bingo_join.py`. Then continue with
 the Track A items that were waiting for the server.
+
+## Deploy record (2026-09-29)
+
+The server had been up 5 days (`uptime`): the "outages" since 24 Sep were
+the network path to it, not the machine. All containers had kept running.
+
+**Pre-flight (read-only).**
+- Production was at `4645669`, alembic `a7c3e9f2d146`, Keno off, allowlist on.
+- `telebirr_sms` deposits: **enabled** since 2026-09-22, but `payment_evidence`
+  had **0 rows**, so no Telebirr SMS had ever been ingested or redeemed.
+- The only Bingo round in play had 0 cards.
+
+**Step 1: this hotfix, 08:05 UTC.**
+- Backup `~/backups/jobingo-20260929T080420Z.dump`; image tagged
+  `jobingo:rollback-4645669`.
+- `b226a33` built; `engine-worker`, `keno-worker`, `payout-worker` and
+  `gateway` restarted.
+- Verified: the fixed code was in all four containers, `ws.js` served
+  the fix, `/healthz` 200, no errors, Keno `server_time` 13 digits (ms),
+  reconcile OK, alembic unchanged. The two empty rounds were voided with
+  nothing to refund.
+- The leftover `verify_bingo_join.py` was deleted.
+
+**Step 2: all of `main` (`28f4bac`), 08:43 UTC.** At the operator's
+instruction to pull the configuration-management work and deploy.
+- Verified before deploying, on a throwaway database migrated from empty:
+  mypy clean; 1,806 passed; 89 of 91 browser tests passed. The failures
+  were the two backup drills, which target the dev container rather than
+  the throwaway database, and two known or ordering flakes that pass on
+  their own. The new migration was round-tripped (downgrade and upgrade).
+- Backup `~/backups/jobingo-20260929T084305Z.dump`; image tagged
+  `jobingo:rollback-b226a33`.
+- Migration `a7c3e9f2d146` -> `b5d9e3a1c7f2` applied; all nine app
+  containers restarted.
+- Verified: Keno still off and allowlist still on, `platform_settings`
+  empty (every limit still equals the environment value), `/healthz` and
+  admin health 200, the new code in the containers, no errors in any of
+  the nine, reconcile OK, Bingo and Keno rounds cycling.
+
+**Current rollback** (to the hotfix; no schema downgrade needed, since the
+new migration only adds columns, a table and CHECKs the older code
+ignores):
+```
+docker tag jobingo:rollback-b226a33 jobingo:latest
+docker compose -f deploy/docker-compose.prod.yml up -d --no-deps gateway admin payments bot sms engine-worker payout-worker simulated-players-worker keno-worker
+git checkout --detach b226a33
+```
+
+The server's checkout is detached at `28f4bac`. Its `origin` still points
+at the old `igame` repo, which no longer resolves.
