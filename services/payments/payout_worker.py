@@ -68,12 +68,12 @@ from services.payments.ledger_reconcile_sweep import sweep_ledger_reconciliation
 from services.payments.payout_settlement import mark_payout_failed, mark_payout_paid
 from services.payments.telebirr_reconcile import run_telebirr_reconciliation
 from services.payments.provider import PaymentProvider
-from services.payments.withdrawals import PAYOUT_STREAM, sweep_stuck_approved_payouts
+from services.payments.withdrawals import PAYOUT_GROUP, PAYOUT_STREAM, sweep_stuck_approved_payouts
 
 logger = structlog.get_logger()
 _tracer = tracing.get_tracer(__name__)
 
-GROUP = "payout-workers"
+GROUP = PAYOUT_GROUP
 _PENDING_STATUSES = ("approved", "processing")
 # How long a stream entry can sit unacked in another consumer's PEL before
 # XAUTOCLAIM will steal it -- long enough that a normal in-flight job (a

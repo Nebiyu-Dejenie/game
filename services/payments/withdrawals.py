@@ -19,6 +19,7 @@ from decimal import Decimal
 import asyncpg
 import structlog
 from redis.asyncio import Redis
+from redis.exceptions import ResponseError
 
 from packages.core import ledger, metrics, tracing
 from services.payments.provider import PaymentProvider
@@ -28,6 +29,10 @@ _tracer = tracing.get_tracer(__name__)
 logger = structlog.get_logger()
 
 PAYOUT_STREAM = "payouts"
+# payout_worker.py's consumer group. Defined here, next to the stream, so
+# sweep_stuck_approved_payouts() can read the group without importing the
+# worker (which imports this module).
+PAYOUT_GROUP = "payout-workers"
 
 # The one payout method every provider in the spec's table (Chapa,
 # SantimPay, ArifPay) covers -- the bot's /withdraw command doesn't yet
@@ -336,15 +341,12 @@ async def sweep_stuck_approved_payouts(
     user_cash, but nothing ever queued to actually pay them out, and
     nothing else sweeps for this.
 
-    Safe to run on a timer regardless of whether the original enqueue
-    landed too, the same "poll as a fallback, not a replacement" design
-    services/payments/deposits.py's poll_pending_deposits() already uses:
-    a redundant re-enqueue for a withdrawal already sitting in the stream
-    is a structural no-op on the processing side --
-    payout_worker.process_one()'s own first check
-    (payment.status not in _PENDING_STATUSES) safely skips anything
-    already settled, and Chapa's own our_ref idempotency covers a
-    still-pending one being dispatched to create_payout() more than once.
+    A payout whose entry is still in the stream, unread by the worker's
+    group or read and not yet acked, is only waiting its turn and is left
+    alone (platform audit, 2026-09-29). It used to be re-enqueued on every
+    tick of any backlog. process_one() never sends a payout twice, but
+    each duplicate that arrived after the send was counted and logged as a
+    redelivery awaiting reconciliation, and the stream grew without bound.
     Returns the payment ids this pass actually re-enqueued.
 
     provider != 'manual': a code-review pass caught that a manual
@@ -361,12 +363,47 @@ async def sweep_stuck_approved_payouts(
     list_pending_withdrawals()/approve_withdrawal_admin() already apply
     to the automatic-rail-only 'approved'/'review' queues.
     """
+    # The stream is read before the rows: a payout the worker finishes in
+    # between is no longer 'approved' when selected, so it can't look lost.
+    queued = await _refs_still_queued(redis)
     rows = await pool.fetch(
         "SELECT id, our_ref FROM payments WHERE direction = 'out' AND status = $1 "
         "AND provider != 'manual' AND updated_at < now() - make_interval(secs => $2)",
         STATUS_APPROVED,
         older_than_seconds,
     )
-    for row in rows:
+    lost = [row for row in rows if row["our_ref"] not in queued]
+    for row in lost:
         await enqueue_payout(redis, our_ref=row["our_ref"], payment_id=row["id"])
-    return [row["id"] for row in rows]
+    return [row["id"] for row in lost]
+
+
+async def _refs_still_queued(redis: Redis) -> set[str]:
+    """our_refs with a payouts entry the worker hasn't finished: not yet
+    read by its group, or read and not yet acked (including one a dead
+    consumer holds, which XAUTOCLAIM hands on). Pending entries are looked
+    up by id, not as a range from the oldest one: a range would also cover
+    every entry acked since, and one entry stuck pending would then make
+    every later lost payout look queued."""
+    try:
+        groups = await redis.xinfo_groups(PAYOUT_STREAM)
+    except ResponseError:  # no stream yet
+        return set()
+    group = next((g for g in groups if g["name"] == PAYOUT_GROUP), None)
+    if group is None:
+        # The worker hasn't created its group yet: every entry is unread.
+        entries = list(await redis.xrange(PAYOUT_STREAM, min="-", max="+") or [])
+    else:
+        entries = list(await redis.xrange(PAYOUT_STREAM, min=f"({group['last-delivered-id']}", max="+") or [])
+        pending = await redis.xpending_range(
+            PAYOUT_STREAM, PAYOUT_GROUP, min="-", max="+", count=_MAX_PENDING_LOOKUP
+        )
+        for entry in pending:
+            entries += await redis.xrange(PAYOUT_STREAM, min=entry["message_id"], max=entry["message_id"]) or []
+    return {str(fields["our_ref"]) for _msg_id, fields in entries if fields and "our_ref" in fields}
+
+
+# Pending entries are normally a handful (one batch in flight). Past this,
+# the sweep re-enqueues anything it can't see, which is the old behaviour
+# and harmless: process_one() never sends a payout twice.
+_MAX_PENDING_LOOKUP = 1000
