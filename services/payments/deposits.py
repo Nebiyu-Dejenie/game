@@ -396,7 +396,11 @@ async def handle_webhook(
         pool,
         redis,
         our_ref=event.our_ref,
-        event_id=event.event_id,
+        # Chapa's event_id is its transaction reference, the same for every
+        # webhook about one payment. Without the status, a 'pending' or
+        # 'failed' event recorded first made the later 'success' a
+        # duplicate that never credited. Same shape as the poll key below.
+        event_id=f"{event.event_id}:{event.status}",
         provider_name=provider.name,
         status=event.status,
         amount=event.amount,
