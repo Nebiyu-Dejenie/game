@@ -161,3 +161,27 @@ git checkout --detach b226a33
 
 The server's checkout is detached at `28f4bac`. Its `origin` still points
 at the old `igame` repo, which no longer resolves.
+
+**Step 3: three more live fixes (`a7603c5`), 09:38 UTC.** At the
+operator's "continue deploy". Four commits on top of `28f4bac`, no
+migration. Only `gateway` and `admin` restarted, so no Bingo round was
+interrupted.
+- `63ea8ed`: the gateway's Redis subscription now survives Redis closing
+  it. Before, a single `CLIENT KILL TYPE pubsub` froze every player's
+  screen until a manual restart.
+- `0e4ce63`: an emergency stop only tells players about a refund that
+  actually happened, with their real refunded amount.
+- `a7603c5`: a manual bonus grant happens once per intended grant (a
+  double-click used to grant twice).
+- Verified before deploying: 1,814 passed; the only failures were the two
+  backup drills, which can't run against the throwaway database. After:
+  the fixed code is in both containers, `/healthz` and admin health 200,
+  no errors, alembic `b5d9e3a1c7f2`, reconcile OK.
+- Backup `~/backups/jobingo-20260929T093749Z.dump`; image tagged
+  `jobingo:rollback-28f4bac`.
+- Rollback: `docker tag jobingo:rollback-28f4bac jobingo:latest`, then
+  `up -d --no-deps gateway admin` and `git checkout --detach 28f4bac`.
+
+Bingo rounds after the deploy were all empty (0 cards) and ended voided
+after ~5 minutes, as they did before it: nobody was playing, and an empty
+room keeps calling numbers so it never looks dead.
