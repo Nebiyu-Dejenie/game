@@ -16,7 +16,19 @@ import contextlib
 import json
 from collections import defaultdict
 
+import structlog
 from redis.asyncio import Redis
+
+from packages.core import metrics
+
+logger = structlog.get_logger()
+
+_PATTERNS = ("room:*", "user:*", "keno:*")
+# Backoff between attempts to re-subscribe after the Redis subscription
+# drops: quick for a blip, capped so a longer outage doesn't turn into a
+# tight retry loop.
+_RESUBSCRIBE_MIN_DELAY = 0.5
+_RESUBSCRIBE_MAX_DELAY = 10.0
 
 MAX_QUEUE_SIZE = 100
 
@@ -68,6 +80,13 @@ class ConnectionQueue:
             self.queue.put_nowait(raw_message)
         except asyncio.QueueFull:
             self._handle_full(raw_message)
+
+    def request_state_sync(self) -> None:
+        """Ask this connection's writer to send a fresh state_sync, waking it
+        if it's parked on an empty queue. Used when the fan-out itself lost
+        messages (see FanoutHub._listen)."""
+        self.needs_state_sync = True
+        self._wake_event.set()
 
     def _handle_full(self, raw_message: str) -> None:
         if _peek_type(raw_message) in DROPPABLE_TYPES:
@@ -145,7 +164,7 @@ class FanoutHub:
         self._listener_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        await self._pubsub.psubscribe("room:*", "user:*", "keno:*")
+        await self._pubsub.psubscribe(*_PATTERNS)
         self._listener_task = asyncio.create_task(self._listen())
 
     async def stop(self) -> None:
@@ -154,7 +173,8 @@ class FanoutHub:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._listener_task
             self._listener_task = None
-        await self._pubsub.punsubscribe("room:*", "user:*", "keno:*")
+        with contextlib.suppress(Exception):  # the connection may already be gone
+            await self._pubsub.punsubscribe(*_PATTERNS)
         await self._pubsub.aclose()  # type: ignore[no-untyped-call]
 
     def subscribe_room(self, room_id: int, cq: ConnectionQueue) -> None:
@@ -186,23 +206,76 @@ class FanoutHub:
         self._keno_subscribers.discard(cq)
 
     async def _listen(self) -> None:
-        async for message in self._pubsub.listen():
-            if not isinstance(message, dict) or message.get("type") != "pmessage":
+        """Delivers every published message to the subscribed connections,
+        for the life of the gateway.
+
+        Supervised (platform audit, 2026-09-29): the subscription used to
+        end the first time Redis closed its connection -- a Redis restart,
+        a timeout, a network blip -- and nothing restarted or reported it.
+        Every connected player then stopped receiving Bingo calls, round
+        results, balance updates and Keno events, while pings still
+        answered, so no client ever reconnected. Reproduced with a single
+        CLIENT KILL TYPE pubsub (test_gateway_fanout_resilience.py). Now a
+        dropped subscription is logged, counted, and re-established with
+        backoff, and every connection is asked for a fresh state_sync,
+        because pub/sub doesn't replay what was published during the gap.
+        """
+        delay = _RESUBSCRIBE_MIN_DELAY
+        while True:
+            try:
+                async for message in self._pubsub.listen():
+                    delay = _RESUBSCRIBE_MIN_DELAY
+                    self._dispatch(message)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("gateway_fanout_subscription_lost")
+                metrics.gateway_fanout_resubscribes_total.inc()
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _RESUBSCRIBE_MAX_DELAY)
+            try:
+                await self._resubscribe()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("gateway_fanout_resubscribe_failed")
                 continue
-            channel = message["channel"]
-            data = message["data"]
-            if channel.startswith("room:"):
-                room_id_str = channel.removeprefix("room:")
-                if not room_id_str.isdigit():
-                    continue
-                for cq in list(self._room_subscribers.get(int(room_id_str), ())):
-                    cq.offer(data)
-            elif channel.startswith("user:"):
-                user_id_str = channel.removeprefix("user:")
-                if not user_id_str.isdigit():
-                    continue
-                for cq in list(self._user_subscribers.get(int(user_id_str), ())):
-                    cq.offer(data)
-            elif channel == "keno:live":
-                for cq in list(self._keno_subscribers):
-                    cq.offer(data)
+            logger.info("gateway_fanout_resubscribed")
+            self._request_state_sync_everywhere()
+
+    async def _resubscribe(self) -> None:
+        old = self._pubsub
+        self._pubsub = self._redis.pubsub()
+        await self._pubsub.psubscribe(*_PATTERNS)
+        with contextlib.suppress(Exception):
+            await old.aclose()  # type: ignore[no-untyped-call]
+
+    def _request_state_sync_everywhere(self) -> None:
+        queues: set[ConnectionQueue] = set(self._keno_subscribers)
+        for subs in self._room_subscribers.values():
+            queues.update(subs)
+        for subs in self._user_subscribers.values():
+            queues.update(subs)
+        for cq in queues:
+            cq.request_state_sync()
+
+    def _dispatch(self, message: object) -> None:
+        if not isinstance(message, dict) or message.get("type") != "pmessage":
+            return
+        channel = message["channel"]
+        data = message["data"]
+        if channel.startswith("room:"):
+            room_id_str = channel.removeprefix("room:")
+            if not room_id_str.isdigit():
+                return
+            for cq in list(self._room_subscribers.get(int(room_id_str), ())):
+                cq.offer(data)
+        elif channel.startswith("user:"):
+            user_id_str = channel.removeprefix("user:")
+            if not user_id_str.isdigit():
+                return
+            for cq in list(self._user_subscribers.get(int(user_id_str), ())):
+                cq.offer(data)
+        elif channel == "keno:live":
+            for cq in list(self._keno_subscribers):
+                cq.offer(data)
