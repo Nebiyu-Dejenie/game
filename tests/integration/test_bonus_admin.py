@@ -95,7 +95,7 @@ async def test_grant_manual_bonus_admin_credits_user_bonus_and_audits(pool, conn
     bonus_id = await bonus_queries.grant_manual_bonus_admin(
         pool, admin_id=admin_id, user_id=user_id, amount=Decimal("25.00"),
         wagering_multiplier=Decimal("2"), expiry_days=None, reason="Goodwill credit",
-        ip_address="10.0.0.1",
+        ip_address="10.0.0.1", request_id=str(uuid.uuid4()),
     )
     bonus_account = await ledger.get_or_create_account(conn, user_id, "user_bonus")
     assert await ledger.balance(conn, bonus_account.id) == Decimal("25.00")
@@ -116,6 +116,7 @@ async def test_list_bonuses_admin_filters_by_status(pool, conn):
     bonus_id = await bonus_queries.grant_manual_bonus_admin(
         pool, admin_id=admin_id, user_id=user_id, amount=Decimal("5.00"),
         wagering_multiplier=Decimal("1"), expiry_days=None, reason="test", ip_address=None,
+        request_id=str(uuid.uuid4()),
     )
     active = await bonus_queries.list_bonuses_admin(pool, user_id=user_id, status="active")
     assert any(b["id"] == bonus_id for b in active)
@@ -131,6 +132,7 @@ async def test_revoke_bonus_admin_reverses_and_audits(pool, conn):
     bonus_id = await bonus_queries.grant_manual_bonus_admin(
         pool, admin_id=admin_id, user_id=user_id, amount=Decimal("8.00"),
         wagering_multiplier=Decimal("1"), expiry_days=None, reason="test", ip_address=None,
+        request_id=str(uuid.uuid4()),
     )
     revoked = await bonus_queries.revoke_bonus_admin(
         pool, admin_id=admin_id, bonus_id=bonus_id, reason="fraud finding", ip_address=None
@@ -222,7 +224,8 @@ async def test_ops_can_manage_rules_but_not_grant_bonuses_over_http(admin_server
 
         grant = await client.post(
             f"{admin_server}/bonuses/grant",
-            json={"user_id": 1, "amount": "10.00", "reason": "test"},
+            json={"user_id": 1, "amount": "10.00", "reason": "support trying to grant",
+                  "request_id": str(uuid.uuid4())},
             headers=headers,
         )
     assert grant.status_code == 403
@@ -234,7 +237,8 @@ async def test_finance_can_grant_a_manual_bonus_over_http(admin_server, pool, co
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{admin_server}/bonuses/grant",
-            json={"user_id": user_id, "amount": "12.00", "reason": "goodwill gesture"},
+            json={"user_id": user_id, "amount": "12.00", "reason": "goodwill gesture",
+                  "request_id": str(uuid.uuid4())},
             headers=headers,
         )
     assert response.status_code == 200, response.text

@@ -1423,6 +1423,8 @@ class GrantManualBonusRequest(BaseModel):
     wagering_multiplier: Decimal = Decimal("3")
     expiry_days: int | None = None
     reason: str
+    # One per intended grant; a repeat of the same id grants nothing new.
+    request_id: str
 
 
 @app.post("/bonuses/grant")
@@ -1431,10 +1433,11 @@ async def grant_manual_bonus(
     admin: Annotated[AdminSession, Depends(require("bonuses:grant"))],
     body: GrantManualBonusRequest,
 ) -> dict[str, int]:
-    if not body.reason.strip():
-        raise HTTPException(status_code=422, detail="reason is required")
-    if body.amount <= 0:
+    _require_reason(body.reason)
+    if not body.amount.is_finite() or body.amount <= 0:
         raise HTTPException(status_code=422, detail="amount must be positive")
+    if not body.request_id.strip():
+        raise HTTPException(status_code=422, detail="request_id is required")
     bonus_id = await bonus_queries.grant_manual_bonus_admin(
         app.state.pool,
         admin_id=admin.admin_id,
@@ -1444,6 +1447,7 @@ async def grant_manual_bonus(
         expiry_days=body.expiry_days,
         reason=body.reason,
         ip_address=_client_ip(request),
+        request_id=body.request_id.strip(),
     )
     return {"id": bonus_id}
 

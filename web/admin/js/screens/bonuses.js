@@ -266,25 +266,37 @@ export async function render(container) {
     loadGrants();
   });
 
+  // One id per intended grant, not per click: a double-click or a retry
+  // after a lost response sends the same id and the backend grants once.
+  // Editing the form means a different grant, so it gets a new id.
+  let grantRequestId = crypto.randomUUID();
+  manualGrantForm.addEventListener("input", () => { grantRequestId = crypto.randomUUID(); });
   manualGrantForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const submitBtn = manualGrantForm.querySelector('button[type="submit"]');
+    if (submitBtn.disabled) return;
+    submitBtn.disabled = true;
     const data = new FormData(manualGrantForm);
     try {
       await api("/bonuses/grant", {
         method: "POST",
         body: {
           user_id: Number(data.get("user_id")),
-          amount: Number(data.get("amount")),
+          amount: String(data.get("amount")),
           wagering_multiplier: Number(data.get("wagering_multiplier") || 3),
           expiry_days: data.get("expiry_days") ? Number(data.get("expiry_days")) : null,
           reason: data.get("reason"),
+          request_id: grantRequestId,
         },
       });
       toast("Bonus granted.");
       manualGrantForm.reset();
+      grantRequestId = crypto.randomUUID();
       loadGrants();
     } catch (err) {
       toast(err.detail || err.message, true);
+    } finally {
+      submitBtn.disabled = false;
     }
   });
 

@@ -161,21 +161,38 @@ async def grant_manual_bonus_admin(
     expiry_days: int | None,
     reason: str,
     ip_address: str | None,
+    request_id: str,
 ) -> int:
     """A superadmin/finance-initiated grant with no triggering deposit --
     e.g. a goodwill credit or a manually-approved promotion. Reuses
     packages/core/bonuses.py::grant_bonus() directly, the same primitive
     every automatic trigger uses, just with granted_by_admin_id set and
     no rule_id.
+
+    `request_id` is one client-generated token per intended grant
+    (web/admin/js/screens/bonuses.js), the same pattern as
+    queries.adjust_balance(). The ledger key used to be the current
+    timestamp, unique on every call, so a double-click or a retried
+    request granted twice -- and both bonuses clear on the same wagering
+    (platform audit, 2026-09-29; test_bonus_manual_grant_idempotency.py).
+    A repeat returns the original bonus without a second audit row.
     """
     expires_at = datetime.now(timezone.utc) + timedelta(days=expiry_days) if expiry_days else None
+    idempotency_key = f"manual-grant-{admin_id}-{user_id}-{request_id}"
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            existing_bonus_id = await conn.fetchval(
+                "SELECT b.id FROM bonuses b JOIN ledger_transactions t ON t.id = b.grant_txn_id "
+                "WHERE t.idempotency_key = $1",
+                idempotency_key,
+            )
+            if existing_bonus_id is not None:
+                return int(existing_bonus_id)
             bonus = await grant_bonus(
                 conn,
                 user_id=user_id,
-                idempotency_key=f"manual-grant-{admin_id}-{user_id}-{datetime.now(timezone.utc).timestamp()}",
+                idempotency_key=idempotency_key,
                 amount=amount,
                 wagering_required=(amount * wagering_multiplier).quantize(Decimal("0.01")),
                 expires_at=expires_at,
