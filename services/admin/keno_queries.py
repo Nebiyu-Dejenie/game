@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import math
-import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -42,6 +41,12 @@ class ReserveWithdrawalBelowFloor(Exception):
         self.attempted_balance = attempted_balance
         self.floor = floor
         super().__init__(f"withdrawal would leave reserve at {attempted_balance}, below floor {floor}")
+
+
+class ReserveTransferConflict(Exception):
+    """A request_id that already carried a different reserve transfer. A
+    repeat of the same transfer is answered with its original result; a
+    different amount under the same id is refused rather than guessed at."""
 
 
 def _json_safe(row: asyncpg.Record | dict[str, Any]) -> dict[str, Any]:
@@ -956,24 +961,62 @@ async def dashboard_summary_admin(pool: asyncpg.Pool) -> dict[str, Any]:
 # is the counterparty both ways, the same real, existing account every
 # other operator-funded pool (payments, simulated players) already uses --
 # not a new concept.
+#
+# One transfer per intended transfer (platform audit, 2026-09-29): the
+# ledger key used to be a fresh uuid on every call, so a double-click or a
+# retried request moved the money twice. The admin screen now sends one
+# `request_id` per intended transfer (web/admin/js/screens/keno/
+# overview.js), the same pattern as queries.adjust_balance(); a repeat
+# returns the current balance with replayed=True and no second audit row
+# (test_keno_reserve_transfer_idempotency.py).
+
+# Serializes reserve transfers so a replay check and the post it guards
+# can't interleave with a racing repeat. Always taken first in the
+# transaction, before any balance row. Reserve transfers are rare and
+# human-paced; nothing else takes this lock.
+_RESERVE_TRANSFER_LOCK_KEY = 927341002
+
+
+async def _already_transferred(
+    conn: ledger.AsyncpgConnection, idempotency_key: str, reserve_account_id: int, reserve_delta: Decimal
+) -> bool:
+    posted = await conn.fetchval(
+        "SELECT e.amount FROM ledger_transactions t JOIN ledger_entries e ON e.transaction_id = t.id "
+        "WHERE t.idempotency_key = $1 AND e.account_id = $2",
+        idempotency_key, reserve_account_id,
+    )
+    if posted is None:
+        return False
+    if posted != reserve_delta:
+        raise ReserveTransferConflict(
+            f"request_id already used for a reserve transfer of {abs(posted)} ETB, not {abs(reserve_delta)} ETB"
+        )
+    return True
 
 
 async def deposit_to_reserve_admin(
-    pool: asyncpg.Pool, *, admin_id: int, amount: Decimal, reason: str, ip_address: str | None = None
+    pool: asyncpg.Pool, *, admin_id: int, amount: Decimal, reason: str, request_id: str,
+    ip_address: str | None = None,
 ) -> dict[str, Any]:
     if not reason.strip():
         raise InvalidKenoConfig("reason is required")
+    if not request_id.strip():
+        raise InvalidKenoConfig("request_id is required")
     if amount <= 0:
         raise InvalidKenoConfig("amount must be positive")
+    idempotency_key = f"admin-reserve-deposit-{admin_id}-{request_id.strip()}"
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", _RESERVE_TRANSFER_LOCK_KEY)
             reserve = await ledger.get_or_create_account(conn, None, "keno_reserve")
             house_float = await ledger.get_or_create_account(conn, None, "house_float")
+            if await _already_transferred(conn, idempotency_key, reserve.id, amount):
+                return {"balance": str(await ledger.balance(conn, reserve.id)), "replayed": True}
             before = await ledger.balance(conn, reserve.id)
             await ledger.post(
                 conn, "keno_reserve_deposit",
                 [ledger.Entry(house_float.id, -amount), ledger.Entry(reserve.id, amount)],
-                idempotency_key=f"admin-reserve-deposit-{uuid.uuid4()}", created_by=f"admin:{admin_id}",
+                idempotency_key=idempotency_key, created_by=f"admin:{admin_id}",
             )
             after = before + amount
             await audit.record(
@@ -981,11 +1024,12 @@ async def deposit_to_reserve_admin(
                 target_id="keno_reserve", before={"balance": str(before)}, after={"balance": str(after)},
                 reason=reason, ip_address=ip_address,
             )
-    return {"balance": str(after)}
+    return {"balance": str(after), "replayed": False}
 
 
 async def withdraw_from_reserve_admin(
-    pool: asyncpg.Pool, *, admin_id: int, amount: Decimal, reason: str, ip_address: str | None = None
+    pool: asyncpg.Pool, *, admin_id: int, amount: Decimal, reason: str, request_id: str,
+    ip_address: str | None = None,
 ) -> dict[str, Any]:
     """Blocks (and audits the blocked attempt itself, not just successful
     withdrawals -- Part 7.1's own "Attempts are blocked and audited")
@@ -994,8 +1038,22 @@ async def withdraw_from_reserve_admin(
     amount clears the floor or nothing moves."""
     if not reason.strip():
         raise InvalidKenoConfig("reason is required")
+    if not request_id.strip():
+        raise InvalidKenoConfig("request_id is required")
     if amount <= 0:
         raise InvalidKenoConfig("amount must be positive")
+    idempotency_key = f"admin-reserve-withdrawal-{admin_id}-{request_id.strip()}"
+
+    async def _replay(conn: ledger.AsyncpgConnection) -> dict[str, Any] | None:
+        """Takes the transfer lock, then answers a repeat of a withdrawal
+        that already happened. Checked in every pass: a repeat must never
+        reach the floor check, which would refuse it (and log a blocked
+        attempt) against the balance the original already lowered."""
+        await conn.execute("SELECT pg_advisory_xact_lock($1)", _RESERVE_TRANSFER_LOCK_KEY)
+        reserve = await ledger.get_or_create_account(conn, None, "keno_reserve")
+        if await _already_transferred(conn, idempotency_key, reserve.id, -amount):
+            return {"balance": str(await ledger.balance(conn, reserve.id)), "replayed": True}
+        return None
 
     async def _locked_floor_check(conn: ledger.AsyncpgConnection) -> tuple[Decimal, Decimal, Decimal]:
         """Row-locks the reserve account's own balance for the rest of
@@ -1020,6 +1078,8 @@ async def withdraw_from_reserve_admin(
     # correctly left unchanged, but the audit row never existed).
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if (replayed := await _replay(conn)) is not None:
+                return replayed
             before, resulting_balance, floor = await _locked_floor_check(conn)
             if resulting_balance < floor:
                 await audit.record(
@@ -1038,6 +1098,8 @@ async def withdraw_from_reserve_admin(
     # must not skip re-checking just because the gap is usually empty.
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if (replayed := await _replay(conn)) is not None:
+                return replayed
             before, resulting_balance, floor = await _locked_floor_check(conn)
             if resulting_balance < floor:
                 await audit.record(
@@ -1053,19 +1115,21 @@ async def withdraw_from_reserve_admin(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if (replayed := await _replay(conn)) is not None:
+                return replayed
             reserve = await ledger.get_or_create_account(conn, None, "keno_reserve")
             house_float = await ledger.get_or_create_account(conn, None, "house_float")
             await ledger.post(
                 conn, "keno_reserve_withdrawal",
                 [ledger.Entry(reserve.id, -amount), ledger.Entry(house_float.id, amount)],
-                idempotency_key=f"admin-reserve-withdrawal-{uuid.uuid4()}", created_by=f"admin:{admin_id}",
+                idempotency_key=idempotency_key, created_by=f"admin:{admin_id}",
             )
             await audit.record(
                 conn, admin_id=admin_id, action="keno.reserve.withdraw", target_type="keno_reserve",
                 target_id="keno_reserve", before={"balance": str(before)},
                 after={"balance": str(resulting_balance)}, reason=reason, ip_address=ip_address,
             )
-    return {"balance": str(resulting_balance)}
+    return {"balance": str(resulting_balance), "replayed": False}
 
 
 # ---------------------------------------------------------------------------

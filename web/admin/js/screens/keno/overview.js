@@ -107,6 +107,12 @@ export async function render(container, { role }) {
   });
 
   const reserveForm = container.querySelector("#reserve-form");
+  // One request id per intended transfer: a double-click, or a retry
+  // after a lost response, sends the same id and the backend moves the
+  // money once. Editing the form means a different transfer, so it gets
+  // a new id.
+  let transferRequestId = crypto.randomUUID();
+  reserveForm.addEventListener("input", () => { transferRequestId = crypto.randomUUID(); });
   reserveForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const direction = e.submitter?.dataset.direction;
@@ -115,12 +121,19 @@ export async function render(container, { role }) {
     const verb = direction === "withdraw" ? "WITHDRAW" : "DEPOSIT";
     const flow = direction === "withdraw" ? "prize reserve → house float" : "house float → prize reserve";
     if (!confirm(`${verb} ${amount} ETB\n(${flow})\n\nReason: ${reason}\n\nThis moves real money.`)) return;
+    const buttons = reserveForm.querySelectorAll("button");
+    buttons.forEach((b) => { b.disabled = true; });
     try {
-      const result = await api(`/keno/reserve/${direction}`, { method: "POST", body: { amount, reason } });
-      toast(`Reserve now ${result.balance} ETB`);
+      const result = await api(`/keno/reserve/${direction}`, {
+        method: "POST", body: { amount, reason, request_id: transferRequestId },
+      });
+      toast(result.replayed ? `Already done. Reserve is ${result.balance} ETB` : `Reserve now ${result.balance} ETB`);
+      transferRequestId = crypto.randomUUID();
       await render(container, { role });
     } catch (err) {
       toast(err.detail || err.message, true);
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
     }
   });
 }

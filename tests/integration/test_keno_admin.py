@@ -236,7 +236,7 @@ async def test_deposit_to_reserve_admin_increases_balance_and_is_audited(pool, c
     before = await ledger.balance(conn, (await ledger.get_or_create_account(conn, None, "keno_reserve")).id)
 
     result = await keno_queries.deposit_to_reserve_admin(
-        pool, admin_id=admin_id, amount=Decimal("5000"), reason="initial funding test"
+        pool, admin_id=admin_id, amount=Decimal("5000"), reason="initial funding test", request_id=str(uuid.uuid4())
     )
     assert Decimal(result["balance"]) == before + Decimal("5000")
 
@@ -249,11 +249,14 @@ async def test_deposit_to_reserve_admin_increases_balance_and_is_audited(pool, c
 
 async def test_withdraw_from_reserve_admin_decreases_balance_and_is_audited(pool, conn):
     admin_id, *_ = await create_test_admin(pool, role="superadmin")
-    await keno_queries.deposit_to_reserve_admin(pool, admin_id=admin_id, amount=Decimal("5000"), reason="fund first")
+    await keno_queries.deposit_to_reserve_admin(
+        pool, admin_id=admin_id, amount=Decimal("5000"), reason="fund first", request_id=str(uuid.uuid4())
+    )
     before = await ledger.balance(conn, (await ledger.get_or_create_account(conn, None, "keno_reserve")).id)
 
     result = await keno_queries.withdraw_from_reserve_admin(
-        pool, admin_id=admin_id, amount=Decimal("1000"), reason="operator profit withdrawal"
+        pool, admin_id=admin_id, amount=Decimal("1000"), reason="operator profit withdrawal",
+        request_id=str(uuid.uuid4()),
     )
     assert Decimal(result["balance"]) == before - Decimal("1000")
 
@@ -274,7 +277,7 @@ async def test_withdraw_below_floor_is_blocked_and_audited_not_just_rejected(poo
     with pytest.raises(keno_queries.ReserveWithdrawalBelowFloor):
         await keno_queries.withdraw_from_reserve_admin(
             pool, admin_id=admin_id, amount=balance + Decimal("1"),  # would go negative -- floor defaults to 0
-            reason="should be blocked",
+            reason="should be blocked", request_id=str(uuid.uuid4()),
         )
 
     unchanged = await ledger.balance(conn, reserve.id)
@@ -292,7 +295,7 @@ async def test_reserve_deposit_endpoint_requires_superadmin(admin_server, pool):
     headers = await _auth_headers(admin_server, pool, role="ops")
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{admin_server}/keno/reserve/deposit", headers=headers, json={"amount": "100", "reason": "test"}
+            f"{admin_server}/keno/reserve/deposit", headers=headers, json={"amount": "100", "reason": "test", "request_id": str(uuid.uuid4())}
         )
     assert response.status_code == 403
 
@@ -302,7 +305,7 @@ async def test_reserve_deposit_succeeds_over_http(admin_server, pool):
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{admin_server}/keno/reserve/deposit", headers=headers,
-            json={"amount": "250.50", "reason": "http deposit test"},
+            json={"amount": "250.50", "reason": "http deposit test", "request_id": str(uuid.uuid4())},
         )
     assert response.status_code == 200, response.text
     assert "balance" in response.json()
@@ -315,7 +318,10 @@ async def test_reserve_withdraw_blocked_below_floor_returns_409_over_http(admin_
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{admin_server}/keno/reserve/withdraw", headers=headers,
-            json={"amount": str(balance + Decimal("1")), "reason": "should be blocked over http"},
+            json={
+                "amount": str(balance + Decimal("1")), "reason": "should be blocked over http",
+                "request_id": str(uuid.uuid4()),
+            },
         )
     assert response.status_code == 409
 

@@ -1611,6 +1611,9 @@ async def list_keno_paytables(
 class KenoReserveTransferRequest(BaseModel):
     amount: str
     reason: str
+    # One per intended transfer, reused on a retry; see
+    # keno_queries.deposit_to_reserve_admin().
+    request_id: str
 
 
 @app.post("/keno/reserve/deposit")
@@ -1630,8 +1633,10 @@ async def keno_reserve_deposit(
     try:
         return await keno_queries.deposit_to_reserve_admin(
             app.state.pool, admin_id=admin.admin_id, amount=amount, reason=body.reason,
-            ip_address=_client_ip(request),
+            request_id=body.request_id, ip_address=_client_ip(request),
         )
+    except keno_queries.ReserveTransferConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except keno_queries.InvalidKenoConfig as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1654,8 +1659,10 @@ async def keno_reserve_withdraw(
     try:
         return await keno_queries.withdraw_from_reserve_admin(
             app.state.pool, admin_id=admin.admin_id, amount=amount, reason=body.reason,
-            ip_address=_client_ip(request),
+            request_id=body.request_id, ip_address=_client_ip(request),
         )
+    except keno_queries.ReserveTransferConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except keno_queries.ReserveWithdrawalBelowFloor as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except keno_queries.InvalidKenoConfig as exc:

@@ -165,3 +165,31 @@ async def test_simulator_runs_and_tier_version_drift_is_flagged(admin_server, po
 
     assert errors == [], f"JS errors: {errors}"
     await page.close()
+
+
+async def test_a_double_clicked_reserve_deposit_moves_the_money_once(admin_server, pool, conn, browser):
+    """Platform audit, 2026-09-29: every click posted with a fresh ledger
+    key, so a double-click on Deposit moved the amount twice."""
+    admin_id, username, password, totp = await create_test_admin(pool, role="superadmin")
+    page = await browser.new_page(viewport={"width": 1280, "height": 1000})
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.on("dialog", lambda dialog: dialog.accept())
+    await _login(page, admin_server, username, password, totp)
+    await page.wait_for_selector("#app-shell:not([hidden])", timeout=10000)
+    await _open_keno(page, "overview")
+
+    await page.fill('#reserve-form input[name="amount"]', "30000.00")
+    await page.fill('#reserve-form input[name="reason"]', "Stage 1 reserve funding, double-clicked")
+    await page.dblclick('#reserve-form button[data-direction="deposit"]')
+    await page.wait_for_selector("#toast.visible", timeout=10000)
+    assert "toast-error" not in (await page.get_attribute("#toast", "class") or "")
+    await page.wait_for_timeout(1500)  # let a second request, if any, land
+
+    deposits = await conn.fetchval(
+        "SELECT count(*) FROM ledger_transactions WHERE kind = 'keno_reserve_deposit' AND created_by = $1",
+        f"admin:{admin_id}",
+    )
+    assert deposits == 1
+    assert errors == [], f"JS errors: {errors}"
+    await page.close()
