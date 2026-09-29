@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
 import structlog
 from redis.asyncio import Redis
 
+from packages.core import metrics
 from packages.core.notifications import NOTIFICATIONS_STREAM
 from services.bot.i18n import resolve_language, t
 from services.bot.notifier import Notifier
@@ -30,6 +33,29 @@ from services.bot.notifier import Notifier
 logger = structlog.get_logger()
 
 GROUP = "bot-notification-workers"
+
+# An entry that raises is retried with its own exponential backoff (base
+# x 2^(attempts-1), capped), while newer entries keep flowing. Once it has
+# failed DEAD_LETTER_AFTER_ATTEMPTS times over at least
+# DEAD_LETTER_AFTER_SECONDS it's copied to DEAD_LETTER_STREAM, acked and
+# counted. The time floor keeps a short DB or Redis outage from
+# dead-lettering ordinary notifications; an entry that can never render (a
+# Bot Content override with a stray '{}', a key this bot doesn't know) is
+# moved aside within about ten minutes. Before this (platform audit,
+# 2026-09-29) such an entry was retried in a loop with no sleep, and every
+# later notification for every player waited behind it.
+RETRY_BACKOFF_BASE_SECONDS = 1.0
+RETRY_BACKOFF_MAX_SECONDS = 60.0
+DEAD_LETTER_AFTER_ATTEMPTS = 5
+DEAD_LETTER_AFTER_SECONDS = 600.0
+DEAD_LETTER_STREAM = f"{NOTIFICATIONS_STREAM}:dead"
+
+
+@dataclass
+class _Failure:
+    attempts: int
+    first_failed_at: float
+    retry_at: float
 
 
 async def ensure_group(redis: Redis) -> None:
@@ -164,8 +190,44 @@ async def process_next(
     return True
 
 
+async def _record_failure(
+    redis: Redis, failures: dict[str, _Failure], msg_id: str, fields: dict[str, str], exc: Exception
+) -> None:
+    now = time.monotonic()
+    failure = failures.setdefault(msg_id, _Failure(attempts=0, first_failed_at=now, retry_at=now))
+    failure.attempts += 1
+    if (
+        failure.attempts >= DEAD_LETTER_AFTER_ATTEMPTS
+        and now - failure.first_failed_at >= DEAD_LETTER_AFTER_SECONDS
+    ):
+        dead_fields: dict[Any, Any] = {**fields, "original_id": msg_id, "error": repr(exc)[:500]}
+        try:
+            await redis.xadd(DEAD_LETTER_STREAM, dead_fields)
+            await redis.xack(NOTIFICATIONS_STREAM, GROUP, msg_id)
+        except Exception:
+            logger.exception("notification_dead_letter_failed", msg_id=msg_id)
+        else:
+            failures.pop(msg_id, None)
+            metrics.notification_relay_dead_lettered_total.inc()
+            logger.error(
+                "notification_dead_lettered",
+                msg_id=msg_id,
+                telegram_id=fields.get("telegram_id"),
+                key=fields.get("key"),
+                attempts=failure.attempts,
+            )
+        return
+    failure.retry_at = now + min(
+        RETRY_BACKOFF_MAX_SECONDS, RETRY_BACKOFF_BASE_SECONDS * 2 ** (failure.attempts - 1)
+    )
+
+
 async def _drain_one_user(
-    pool: asyncpg.Pool, redis: Redis, notifier: Notifier, entries: list[tuple[str, dict[str, str]]]
+    pool: asyncpg.Pool,
+    redis: Redis,
+    notifier: Notifier,
+    entries: list[tuple[str, dict[str, str]]],
+    failures: dict[str, _Failure] | None = None,
 ) -> None:
     # A code-review pass caught two related gaps here: db_pool.py's new
     # bounded pool.acquire() turns sustained-load pool exhaustion into a
@@ -183,12 +245,21 @@ async def _drain_one_user(
     for msg_id, fields in entries:
         try:
             await process_one(pool, redis, notifier, msg_id=msg_id, fields=fields)
-        except Exception:
+        except Exception as exc:
             logger.exception("notification_relay_process_one_failed", msg_id=msg_id)
+            if failures is not None:
+                await _record_failure(redis, failures, msg_id, fields, exc)
+        else:
+            if failures is not None:
+                failures.pop(msg_id, None)
 
 
 async def _process_batch(
-    pool: asyncpg.Pool, redis: Redis, notifier: Notifier, entries: list[tuple[str, dict[str, str]]]
+    pool: asyncpg.Pool,
+    redis: Redis,
+    notifier: Notifier,
+    entries: list[tuple[str, dict[str, str]]],
+    failures: dict[str, _Failure] | None = None,
 ) -> None:
     # A code review pass caught that awaiting process_one() for each entry
     # in turn made this a head-of-line-blocking loop: process_one() awaits
@@ -205,7 +276,7 @@ async def _process_batch(
     for msg_id, fields in entries:
         by_user.setdefault(int(fields["telegram_id"]), []).append((msg_id, fields))
     await asyncio.gather(
-        *(_drain_one_user(pool, redis, notifier, user_entries) for user_entries in by_user.values())
+        *(_drain_one_user(pool, redis, notifier, user_entries, failures) for user_entries in by_user.values())
     )
 
 
@@ -213,6 +284,9 @@ async def run_forever(
     pool: asyncpg.Pool, redis: Redis, notifier: Notifier, *, consumer_name: str = "relay-1"
 ) -> None:
     await ensure_group(redis)
+    # This consumer's failing entries, by stream id. In memory on purpose:
+    # after a restart every pending entry is simply retried again.
+    failures: dict[str, _Failure] = {}
     while True:
         # Read-phase failures (Redis itself, say) get isolated the same
         # way as services/payments/payout_worker.py's run_forever() --
@@ -220,17 +294,32 @@ async def run_forever(
         # exception escape this loop and silently kill the fire-and-forget
         # relay_task with no automatic restart (services/bot/app.py only
         # ever cancels it at shutdown, never checks its health in between).
+        #
+        # Pending entries (redelivered after a crash, or waiting out a
+        # retry backoff) are read alongside new ones, never instead of
+        # them: an entry that keeps failing must not hold up everyone
+        # else's notifications while it waits.
         try:
-            pending = await redis.xreadgroup(GROUP, consumer_name, {NOTIFICATIONS_STREAM: "0"}, count=10)
-            entries = _flatten(pending)
-            if not entries:
-                fresh = await redis.xreadgroup(
-                    GROUP, consumer_name, {NOTIFICATIONS_STREAM: ">"}, count=10, block=5000
-                )
-                entries = _flatten(fresh)
+            pending = _flatten(
+                await redis.xreadgroup(GROUP, consumer_name, {NOTIFICATIONS_STREAM: "0"}, count=100)
+            )
+            now = time.monotonic()
+            due = [(i, f) for i, f in pending if i not in failures or failures[i].retry_at <= now]
+            # Wait for new entries only until the next retry is due.
+            next_retry = min((failures[i].retry_at for i, _ in pending if i in failures), default=None)
+            block_ms = 5000 if next_retry is None else max(1, min(5000, int((next_retry - now) * 1000) + 1))
+            fresh = await redis.xreadgroup(
+                GROUP,
+                consumer_name,
+                {NOTIFICATIONS_STREAM: ">"},
+                count=10,
+                block=None if due else block_ms,
+            )
+            entries = due + _flatten(fresh)
         except Exception:
             logger.exception("notification_relay_read_failed")
             await asyncio.sleep(1)
             continue
 
-        await _process_batch(pool, redis, notifier, entries)
+        if entries:
+            await _process_batch(pool, redis, notifier, entries, failures)

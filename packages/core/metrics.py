@@ -166,6 +166,14 @@ notification_campaign_deliveries_total = Counter(
     ["outcome"],
 )
 
+# services/bot/notification_relay.py: entries that kept failing and were
+# moved to bot_notifications:dead so they stop holding up everyone else's.
+# Nonzero means someone missed a message; the entry is there to replay.
+notification_relay_dead_lettered_total = Counter(
+    "notification_relay_dead_lettered_total",
+    "Bot notifications moved to the dead-letter stream after repeated failures",
+)
+
 # --- bot / Telegram (command latency diagnosis pass) --------------------
 #
 # Every one of these is populated from a single choke point each, the same
