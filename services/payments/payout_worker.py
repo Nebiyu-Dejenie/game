@@ -377,10 +377,22 @@ async def run_forever(
             continue
 
         for msg_id, fields in entries:
+            # .get, not [...]: an entry without our_ref (a hand-made XADD)
+            # used to raise KeyError again inside this except handler, which
+            # ended run_forever(), and the unacked entry killed it again on
+            # the next start.
+            our_ref = fields.get("our_ref")
             try:
-                await process_one(pool, redis, provider, msg_id=msg_id, our_ref=fields["our_ref"])
+                if our_ref is None:
+                    # Nothing to look the payout up by. Acked so it can't
+                    # stall the queue; a real 'approved' payout it stood for
+                    # is re-enqueued by sweep_stuck_approved_payouts().
+                    logger.error("payout_entry_without_our_ref", msg_id=msg_id, fields=fields)
+                    await redis.xack(PAYOUT_STREAM, GROUP, msg_id)
+                    continue
+                await process_one(pool, redis, provider, msg_id=msg_id, our_ref=our_ref)
             except Exception:
-                logger.exception("payout_worker_process_one_failed", our_ref=fields["our_ref"])
+                logger.exception("payout_worker_process_one_failed", msg_id=msg_id, our_ref=our_ref)
 
 
 DEPOSIT_POLL_INTERVAL_SECONDS = 30
@@ -462,6 +474,18 @@ async def main_async() -> None:
         loop.add_signal_handler(sig, stop_event.set)
 
     consumer_task = asyncio.create_task(run_forever(pool, redis, provider))
+
+    # run_forever() only ends by raising (ensure_group() at startup is
+    # outside its loop's handling, for one). Nothing awaited this task, so
+    # the process kept running its sweeps and metrics server with nothing
+    # paying out. Stopping instead lets restart: unless-stopped bring the
+    # container back.
+    def _consumer_exited(task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            logger.error("payout_consumer_exited", exc_info=task.exception())
+            stop_event.set()
+
+    consumer_task.add_done_callback(_consumer_exited)
     sweep_tasks = [
         asyncio.create_task(
             _run_periodic_sweep(
