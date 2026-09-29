@@ -472,6 +472,20 @@ class ConnectionHandler:
     # --- outbound ----------------------------------------------------------
 
     async def _writer_loop(self) -> None:
+        """Platform audit, 2026-09-29: if the writer died (a DB error in
+        build_state_sync, a failed send), nothing noticed. The reader kept
+        answering pings, so the client never reconnected, and it got no
+        more calls, results or balance updates. Now a failure closes the
+        socket with 1011, and the client reconnects and re-syncs."""
+        try:
+            await self._write_until_closed()
+        except WebSocketDisconnect:
+            pass  # the client left; the reader sees the same disconnect
+        except Exception:
+            logger.exception("gateway_writer_failed", user_id=self._user_id)
+            await self._safe_close(1011, "internal_error")
+
+    async def _write_until_closed(self) -> None:
         assert self._user_id is not None
         while True:
             if self._cq.needs_state_sync:
@@ -497,7 +511,10 @@ class ConnectionHandler:
     async def _cleanup(self) -> None:
         if self._writer_task is not None:
             self._writer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            # Exception too: a writer that had already died used to re-raise
+            # here and skip every unsubscribe below, leaking this mailbox in
+            # the hub for the life of the process. It was logged when it died.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._writer_task
             self._writer_task = None
         for room_id in list(self._joined_rooms):
