@@ -237,6 +237,14 @@ async def _place_for_session(pool: asyncpg.Pool, redis: Redis, session: Autoplay
             idempotency_key=f"autoplay:{session.id}:{round_id}",
             autoplay_session_id=session.id,
         )
+    except keno_tickets.AutoplayLossLimitPending as exc:
+        if exc.has_unsettled_tickets:
+            # Skip this round: the unsettled tickets' settlement decides
+            # whether the session stops or goes on.
+            logger.info("keno_autoplay_round_skipped_loss_limit_pending", session_id=session.id, round_id=round_id)
+        else:
+            await _stop_internal(pool, session.id, status="stopped", reason="stop_on_loss")
+        return
     except keno_tickets.TicketRejected as exc:
         await _stop_internal(pool, session.id, status="stopped", reason=f"ticket_rejected:{exc.code}")
         logger.info("keno_autoplay_session_stopped_on_rejection", session_id=session.id, reason=exc.code)

@@ -743,3 +743,47 @@ async def test_the_refund_path_refuses_a_round_whose_numbers_were_drawn(pool: as
         round_status = await conn.fetchval("SELECT status FROM keno_rounds WHERE id = $1", round_id)
         ticket_status = await conn.fetchval("SELECT status FROM keno_tickets WHERE id = $1", ticket_id)
     assert (round_status, ticket_status) == ("draw_complete", "pending")
+
+
+async def test_autoplay_stop_loss_is_not_overshot_by_the_round_that_opens_during_settlement(
+    pool: asyncpg.Pool, redis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round N's settlement runs in the background while round N+1's betting
+    opens, and autoplay places its N+1 ticket right then. A session whose
+    loss limit round N's loss reaches must not also be charged for N+1.
+    Every draw here misses the session's pick, so the first loss (10.00)
+    reaches the 10.00 stop-loss: exactly one ticket, then 'stop_on_loss'."""
+    monkeypatch.setattr(keno, "derive_keno_draw", lambda *args, **kwargs: list(range(21, 41)))
+    async with pool.acquire() as conn:
+        await _seed_fast_config_and_tier(conn, betting_seconds=1, draw_seconds=1, result_seconds=1)
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+    session = await keno_autoplay.start_session(
+        pool, user_id=user_id, picks=[7], stake=Decimal("10"), stop_on_loss_amount=Decimal("10")
+    )
+
+    engine = KenoRoundEngine(pool, redis)
+    engine_task = asyncio.create_task(engine.run_forever())
+    try:
+        async def _session_stopped_and_settled() -> bool:
+            row = await pool.fetchrow("SELECT status FROM keno_autoplay_sessions WHERE id = $1", session.id)
+            pending = await pool.fetchval(
+                "SELECT count(*) FROM keno_tickets WHERE autoplay_session_id = $1 AND status = 'pending'", session.id
+            )
+            return row["status"] != "active" and pending == 0
+
+        await _wait_until(_session_stopped_and_settled, timeout=25.0)
+    finally:
+        engine.stop()
+        await asyncio.wait_for(engine_task, timeout=15.0)
+
+    async with pool.acquire() as conn:
+        session_row = await conn.fetchrow(
+            "SELECT status, stop_reason FROM keno_autoplay_sessions WHERE id = $1", session.id
+        )
+        tickets = await conn.fetch(
+            "SELECT status FROM keno_tickets WHERE autoplay_session_id = $1 ORDER BY id", session.id
+        )
+        cash = await ledger.balance(conn, (await ledger.get_or_create_account(conn, user_id, "user_cash")).id)
+    assert (session_row["status"], session_row["stop_reason"]) == ("stopped", "stop_on_loss")
+    assert [t["status"] for t in tickets] == ["lost"]
+    assert cash == Decimal("990.00")  # lost exactly the 10.00 limit, not 20.00

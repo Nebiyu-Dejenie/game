@@ -342,3 +342,98 @@ async def test_record_settlement_leaves_an_already_stopped_session_alone(
     assert row["status"] == "stopped"
     assert row["stop_reason"] == "manual"  # not overwritten to stop_on_win
     assert row["net_position"] == Decimal("0.00")  # not updated either -- the UPDATE's own WHERE status='active' skipped it
+
+
+# --- stop-loss vs the round that opens while the last one settles ----------
+
+
+async def _open_next_round(conn: asyncpg.Connection, previous_round_id: int) -> int:
+    """Close the previous round's betting and open the next one, as the
+    engine does before the previous round has settled."""
+    await conn.execute("UPDATE keno_rounds SET status = 'betting_closed' WHERE id = $1", previous_round_id)
+    return await conn.fetchval(
+        """
+        INSERT INTO keno_rounds (seq, status, config_id, tier_id, server_seed_hash, betting_opened_at)
+        SELECT (SELECT MAX(seq) + 1 FROM keno_rounds), 'betting_open', config_id, tier_id, server_seed_hash, now()
+        FROM keno_rounds WHERE id = $1
+        RETURNING id
+        """,
+        previous_round_id,
+    )
+
+
+async def _settle_session_ticket(pool: asyncpg.Pool, round_id: int, session_id: int, payout: Decimal) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE keno_tickets SET status = $3, payout = $4, settled_at = now() "
+            "WHERE round_id = $1 AND autoplay_session_id = $2",
+            round_id, session_id, "won" if payout > 0 else "lost", payout,
+        )
+    await keno_autoplay.record_settlement(
+        pool, autoplay_session_id=session_id, stake=Decimal("10"), payout=payout, jackpot_payout=Decimal(0)
+    )
+
+
+async def _session_ticket_rounds(pool: asyncpg.Pool, session_id: int) -> list[int]:
+    rows = await pool.fetch("SELECT round_id FROM keno_tickets WHERE autoplay_session_id = $1 ORDER BY id", session_id)
+    return [r["round_id"] for r in rows]
+
+
+async def test_a_session_at_its_stop_loss_if_the_unsettled_round_loses_skips_the_next_round(
+    pool: asyncpg.Pool, redis
+) -> None:
+    async with pool.acquire() as conn:
+        round_1 = await _seed_keno_round(conn)
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+    session = await keno_autoplay.start_session(
+        pool, user_id=user_id, picks=[7], stake=Decimal("10"), stop_on_loss_amount=Decimal("10")
+    )
+    await keno_autoplay.place_for_active_sessions(pool, redis, round_id=round_1)
+    async with pool.acquire() as conn:
+        round_2 = await _open_next_round(conn, round_1)
+
+    await keno_autoplay.place_for_active_sessions(pool, redis, round_id=round_2)  # round 1 not settled yet
+
+    assert await _session_ticket_rounds(pool, session.id) == [round_1]
+    assert (await keno_autoplay.active_session(pool, user_id=user_id)) is not None  # skipped, not stopped
+    await _settle_session_ticket(pool, round_1, session.id, Decimal("0"))
+    stopped = await pool.fetchrow("SELECT status, stop_reason FROM keno_autoplay_sessions WHERE id = $1", session.id)
+    assert (stopped["status"], stopped["stop_reason"]) == ("stopped", "stop_on_loss")
+
+
+async def test_a_skipped_session_whose_unsettled_round_won_plays_the_round_after(pool: asyncpg.Pool, redis) -> None:
+    async with pool.acquire() as conn:
+        round_1 = await _seed_keno_round(conn)
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+    session = await keno_autoplay.start_session(
+        pool, user_id=user_id, picks=[7], stake=Decimal("10"), stop_on_loss_amount=Decimal("10")
+    )
+    await keno_autoplay.place_for_active_sessions(pool, redis, round_id=round_1)
+    async with pool.acquire() as conn:
+        round_2 = await _open_next_round(conn, round_1)
+    await keno_autoplay.place_for_active_sessions(pool, redis, round_id=round_2)  # skipped
+    await _settle_session_ticket(pool, round_1, session.id, Decimal("34.00"))
+    async with pool.acquire() as conn:
+        round_3 = await _open_next_round(conn, round_2)
+
+    await keno_autoplay.place_for_active_sessions(pool, redis, round_id=round_3)
+
+    assert await _session_ticket_rounds(pool, session.id) == [round_1, round_3]
+
+
+async def test_a_session_with_room_under_its_stop_loss_keeps_playing_while_a_round_settles(
+    pool: asyncpg.Pool, redis
+) -> None:
+    async with pool.acquire() as conn:
+        round_1 = await _seed_keno_round(conn)
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+    session = await keno_autoplay.start_session(
+        pool, user_id=user_id, picks=[7], stake=Decimal("10"), stop_on_loss_amount=Decimal("30")
+    )
+    await keno_autoplay.place_for_active_sessions(pool, redis, round_id=round_1)
+    async with pool.acquire() as conn:
+        round_2 = await _open_next_round(conn, round_1)
+
+    await keno_autoplay.place_for_active_sessions(pool, redis, round_id=round_2)
+
+    assert await _session_ticket_rounds(pool, session.id) == [round_1, round_2]

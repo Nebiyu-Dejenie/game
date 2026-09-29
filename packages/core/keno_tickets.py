@@ -100,6 +100,22 @@ class AutoplaySessionNotActive(TicketRejected):
     code = "autoplay_session_not_active"
 
 
+class AutoplayLossLimitPending(TicketRejected):
+    """An autoplay placement that would bet past the session's stop-loss if
+    its still-unsettled tickets lose. Round N settles in the background
+    while round N+1's betting opens, so without this a session whose limit
+    round N's loss reaches was also charged for N+1 (platform audit,
+    2026-09-29). keno_autoplay skips the round rather than stopping: the
+    pending settlement either stops the session or leaves it room to go on.
+    """
+
+    code = "autoplay_loss_limit_pending"
+
+    def __init__(self, *, has_unsettled_tickets: bool) -> None:
+        self.has_unsettled_tickets = has_unsettled_tickets
+        super().__init__(self.code)
+
+
 class SimulatedPlayerCannotPlaceKenoTicket(TicketRejected):
     """Same defense-in-depth as services/payments/withdrawals.py's
     SimulatedPlayerCannotWithdraw -- a house-float-funded simulated
@@ -273,11 +289,16 @@ async def _place_ticket(
             # round. stop_session()'s UPDATE takes the same row lock, so
             # whichever commits first wins cleanly.
             if autoplay_session_id is not None:
-                session_status = await conn.fetchval(
-                    "SELECT status FROM keno_autoplay_sessions WHERE id = $1 FOR NO KEY UPDATE", autoplay_session_id
+                session_row = await conn.fetchrow(
+                    "SELECT status, stop_on_loss_amount FROM keno_autoplay_sessions WHERE id = $1 FOR NO KEY UPDATE",
+                    autoplay_session_id,
                 )
-                if session_status != "active":
+                if session_row is None or session_row["status"] != "active":
                     raise AutoplaySessionNotActive(str(autoplay_session_id))
+                if session_row["stop_on_loss_amount"] is not None:
+                    await _check_autoplay_loss_limit(
+                        conn, autoplay_session_id, Decimal(session_row["stop_on_loss_amount"])
+                    )
 
             block = await responsible_gaming.check_stake_allowed(conn, user_id, stake)
             if block.blocked:
@@ -478,6 +499,27 @@ async def _replayed_ticket(
         idempotency_key=client_key,
         status=existing["status"],
     )
+
+
+async def _check_autoplay_loss_limit(
+    conn: ledger.AsyncpgConnection, autoplay_session_id: int, stop_on_loss_amount: Decimal
+) -> None:
+    """Worst-case net position: the session's settled tickets as they
+    turned out and its unsettled ones as lost. Read from the tickets, not
+    net_position, which is only updated after settlement commits.
+    record_settlement() stops the session once net_position reaches
+    -stop_on_loss_amount, so a worst case already there means that stop
+    may be on its way and this ticket must not be placed."""
+    row = await conn.fetchrow(
+        "SELECT COALESCE(SUM(CASE status WHEN 'refunded' THEN 0 WHEN 'pending' THEN -stake "
+        "ELSE COALESCE(payout, 0) + COALESCE(jackpot_payout, 0) - stake END), 0) AS worst_case_net, "
+        "count(*) FILTER (WHERE status = 'pending') AS unsettled "
+        "FROM keno_tickets WHERE autoplay_session_id = $1",
+        autoplay_session_id,
+    )
+    assert row is not None
+    if Decimal(row["worst_case_net"]) <= -stop_on_loss_amount:
+        raise AutoplayLossLimitPending(has_unsettled_tickets=row["unsettled"] > 0)
 
 
 async def _keno_reserve_balance(conn: ledger.AsyncpgConnection) -> Decimal:
