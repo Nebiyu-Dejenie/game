@@ -209,3 +209,40 @@ async def test_a_redis_error_answering_one_command_does_not_stop_the_room_answer
     finally:
         await engine.stop()
         await asyncio.wait_for(task, timeout=15)
+
+
+async def test_same_call_auto_mark_winners_all_win_even_when_claim_logging_is_slow(
+    pool, redis, card_pool, conn, monkeypatch
+):
+    """Platform audit #22: when one call completed several auto-mark cards,
+    each claim wrote its claim_attempts row before taking its timestamp, so
+    the second winner was timed after the first one's DB round trip (and
+    the third after two). Once that passed the 50 ms tie window, or the
+    settlement task fired meanwhile, a genuine same-call co-winner got
+    round_already_settled and their share went to the others."""
+    grids = (card_pool[1], card_pool[2])
+    monkeypatch.setattr(
+        round_engine.bingo,
+        "winning_patterns",
+        lambda grid, called, enabled: _TWO_LINES if any(grid is g for g in grids) else [],
+    )
+    real_record = RoundEngine._record_claim_attempt
+
+    async def slow_record(self, *args, **kwargs):
+        await asyncio.sleep(0.06)  # WAL fsync plus a wait for a pooled connection, under load
+        return await real_record(self, *args, **kwargs)
+
+    monkeypatch.setattr(RoundEngine, "_record_claim_attempt", slow_record)
+
+    room_id, engine, task, user_a = await _start_two_player_round(pool, redis, pool, card_pool, conn)
+    round_id = engine.round_id
+    user_b = await pool.fetchval(
+        "SELECT user_id FROM round_entries WHERE round_id = $1 AND user_id <> $2", round_id, user_a
+    )
+    try:
+        await _settled_or_engine_ended(pool, task, round_id)
+    finally:
+        await engine.stop()
+        await asyncio.wait_for(task, timeout=15)
+
+    assert await _winners(pool, round_id) == {user_a, user_b}

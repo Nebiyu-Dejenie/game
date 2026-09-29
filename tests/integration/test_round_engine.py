@@ -685,12 +685,12 @@ async def test_an_unexpected_exception_during_auto_claim_does_not_crash_the_room
         real_claim = engine.claim
         call_count = 0
 
-        async def flaky_claim(user_id, card_no, *, source="manual"):
+        async def flaky_claim(user_id, card_no, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("simulated bug in claim()")
-            return await real_claim(user_id, card_no, source=source)
+            return await real_claim(user_id, card_no, **kwargs)
 
         await wait_until(lambda: engine.status == "running", timeout=5)
         monkeypatch.setattr(round_engine.bingo, "winning_patterns", fake_winning_patterns)

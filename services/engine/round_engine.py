@@ -576,7 +576,19 @@ class RoundEngine:
             )
         return JoinResult(True, None)
 
-    async def claim(self, user_id: int, card_no: int, *, source: str = "manual") -> ClaimResult:
+    async def claim(
+        self,
+        user_id: int,
+        card_no: int,
+        *,
+        source: str = "manual",
+        claimed_at: float | None = None,
+        record_attempt: bool = True,
+    ) -> ClaimResult:
+        """`claimed_at` and `record_attempt` are for the auto-mark scan in
+        _call_next_number(), which claims every card a call completed with
+        that call's own time and writes their claim_attempts rows only
+        after all of them are registered. See that loop for why."""
         # Every attempt is logged to claim_attempts, including ones from a
         # user who isn't even in the round -- that's still an event worth an
         # audit trail, not just the attempts that get as far as a pattern
@@ -630,10 +642,10 @@ class RoundEngine:
                         self._locked_out.add((user_id, card_no))
                     return ClaimResult(False, "no_pattern")
         finally:
-            if self._round_id is not None:
+            if record_attempt and self._round_id is not None:
                 await self._record_claim_attempt(user_id, card_no, valid)
 
-        now = time.monotonic()
+        now = claimed_at if claimed_at is not None else time.monotonic()
         async with self._winner_lock:
             # A user can reach a valid claim through two independent paths
             # for the *same card* in the same round -- the server's own
@@ -995,6 +1007,19 @@ class RoundEngine:
         # already relies on, per test_two_simultaneous_claims_split_
         # derash_evenly); nothing here needs to short-circuit for that to
         # work, it only needs to not give up early.
+        #
+        # Every card this call completed is claimed with the call's own
+        # time, and its claim_attempts row is written only once all of them
+        # are registered (platform audit, 2026-09-29). Each claim used to
+        # write its row first, so the second winner was timed after the
+        # first one's DB round trip, the third after two, and the
+        # settlement task could fire in between: past 50 ms of DB latency a
+        # genuine same-call co-winner got round_already_settled and their
+        # share went to the others. Nothing below awaits I/O before the
+        # attempts are written, so the settlement task can't run until
+        # every same-call winner is in _pending_winners.
+        call_time = time.monotonic()
+        auto_claims: list[tuple[int, int]] = []
         for (user_id, card_no), entry in list(self._entries.items()):
             if not entry.auto_mark:
                 continue
@@ -1007,7 +1032,10 @@ class RoundEngine:
             ):
                 self._auto_claimed.add((user_id, card_no))
                 try:
-                    await self.claim(user_id, card_no, source="auto")
+                    await self.claim(
+                        user_id, card_no, source="auto", claimed_at=call_time, record_attempt=False
+                    )
+                    auto_claims.append((user_id, card_no))
                 except Exception:
                     # A code review pass caught this had no isolation at
                     # all, unlike _handle_command()'s own identical fix
@@ -1041,6 +1069,19 @@ class RoundEngine:
                         user_id=user_id,
                         card_no=card_no,
                     )
+        for user_id, card_no in auto_claims:
+            # The claim itself is already registered; a failed audit row
+            # must not take it back or end the loop.
+            try:
+                await self._record_claim_attempt(user_id, card_no, True)
+            except Exception:
+                logger.exception(
+                    "engine_auto_claim_attempt_log_failed",
+                    room_id=self._room.id,
+                    round_id=round_id,
+                    user_id=user_id,
+                    card_no=card_no,
+                )
         return True
 
     async def _finalize_after_window(self, deadline: float) -> None:
