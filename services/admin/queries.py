@@ -683,10 +683,10 @@ async def stop_room_admin(
                 raise ValueError(f"no such room: {room_id}")
 
             round_row = await conn.fetchrow(
-                "SELECT id, status FROM rounds WHERE room_id = $1 ORDER BY seq DESC LIMIT 1",
+                "SELECT id, status, stake FROM rounds WHERE room_id = $1 ORDER BY seq DESC LIMIT 1",
                 room_id,
             )
-            refunded_user_ids: list[int] = []
+            cards_by_user: dict[int, int] = {}
             refunded_count = 0
             stopped_round_id: int | None = None
             if round_row is not None:
@@ -697,13 +697,13 @@ async def stop_room_admin(
                 # deleting player entries" rule this action must respect
                 # too), but reading it up front here keeps this query
                 # right next to the action it's informing, not scattered.
-                refunded_user_ids = [
-                    r["user_id"]
+                cards_by_user = {
+                    r["user_id"]: r["cards"]
                     for r in await conn.fetch(
-                        "SELECT DISTINCT user_id FROM round_entries WHERE round_id = $1",
+                        "SELECT user_id, count(*) AS cards FROM round_entries WHERE round_id = $1 GROUP BY user_id",
                         round_row["id"],
                     )
-                ]
+                }
                 refunded_count = await refund_round_in_transaction(
                     conn, round_row["id"], reason=f"admin_emergency_stop: {reason}"
                 )
@@ -740,8 +740,17 @@ async def stop_room_admin(
     # transaction above has committed for real -- "never promise a
     # refund before the ledger confirms it" applies here exactly as much
     # as it does to any other financial message this codebase sends.
-    if stopped_round_id is not None and refunded_user_ids:
-        room_stake = await pool.fetchval("SELECT stake FROM rooms WHERE id = $1", room_id)
+    #
+    # Only when this call actually refunded the round (platform audit,
+    # 2026-09-29): stopping a room whose latest round had already finished,
+    # or a second click on Stop, used to tell that round's players "your
+    # stake has been refunded" when nothing was, and broadcast round_voided
+    # over a finished result. Each player is told what they actually got
+    # back -- cards held times the round's own stake -- not the room's
+    # current per-card stake (test_emergency_stop_notifications.py).
+    if refunded_count and round_row is not None:
+        round_stake: Decimal = round_row["stake"]
+        refunded_user_ids = list(cards_by_user)
         await asyncio.gather(
             *(
                 ledger.publish_balance_update(pool, redis, user_id)
@@ -755,7 +764,7 @@ async def stop_room_admin(
                     redis,
                     user_id=user_id,
                     key="notify.room_emergency_stopped",
-                    amount=str(room_stake),
+                    amount=str((round_stake * cards_by_user[user_id]).quantize(Decimal("0.01"))),
                     reference=f"room-stop-{stopped_round_id}",
                 )
                 for user_id in refunded_user_ids
