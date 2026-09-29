@@ -83,11 +83,15 @@ groups:
           summary: "p99 gateway command-to-ack latency above 1s over the last 5 minutes"
 
       - alert: RoundVoided
-        expr: increase(engine_rounds_voided_total[5m]) > 0
+        # Only voids that refunded a stake. Every empty room voids a round
+        # every few minutes (underfilled lobby, or an exhausted draw with
+        # nobody in it), so engine_rounds_voided_total would keep this
+        # firing around the clock in production.
+        expr: increase(engine_rounds_voided_with_stakes_total[5m]) > 0
         labels:
           severity: warning
         annotations:
-          summary: "A round was voided and refunded in the last 5 minutes"
+          summary: "A round with real stakes was voided and refunded in the last 5 minutes"
 
       # CTO directive section 107: "payment ingestion stopped, parser
       # failure spike, ... reconciliation mismatch" for the Telebirr

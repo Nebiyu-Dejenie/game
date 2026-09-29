@@ -102,4 +102,6 @@ async def refund_round_in_transaction(
         round_id,
     )
     metrics.engine_rounds_voided_total.inc()
+    if entrants:
+        metrics.engine_rounds_voided_with_stakes_total.inc()
     return len(entrants)

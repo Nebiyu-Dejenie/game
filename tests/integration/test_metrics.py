@@ -304,11 +304,13 @@ async def test_rounds_voided_counter_increments_on_a_real_refund(pool, redis, ca
     await redis.delete(f"room:lock:{room_id}")
 
     before = metrics.engine_rounds_voided_total._value.get()
+    with_stakes_before = metrics.engine_rounds_voided_with_stakes_total._value.get()
     ledger_before = metrics.ledger_transactions_total.labels(kind="refund")._value.get()
     refunded = await refunds.refund_round(pool, round_id, reason="test-forced-void")
     assert refunded == 2  # p1 and p2, each their own ledger transaction
     after = metrics.engine_rounds_voided_total._value.get()
     assert after == before + 1
+    assert metrics.engine_rounds_voided_with_stakes_total._value.get() == with_stakes_before + 1
     # refund_round_in_transaction() itself can't safely record this (see
     # its own comment) -- confirms the caller-side fix actually counts
     # every entrant refunded, not just fires once regardless of how many.
@@ -390,3 +392,21 @@ async def test_payments_metrics_endpoint_reports_live_queue_depth_and_house_reve
         assert reported_revenue == pytest.approx(float(before_revenue + Decimal("7.00")))
     finally:
         await redis.delete(PAYOUT_STREAM)
+
+
+async def test_an_empty_round_voiding_is_not_counted_as_a_void_with_stakes(pool, conn):
+    """RoundVoided alerts on voids that refunded something. An empty room
+    voids a round every few minutes, and that must not page anyone."""
+    room_id = await create_room(conn, stake=Decimal("10.00"))
+    round_id = await conn.fetchval(
+        "INSERT INTO rounds (room_id, seq, status, stake, house_cut_bps, server_seed_hash) "
+        "VALUES ($1, 1, 'lobby', 10.00, 2000, 'test-hash') RETURNING id",
+        room_id,
+    )
+    before = metrics.engine_rounds_voided_total._value.get()
+    with_stakes_before = metrics.engine_rounds_voided_with_stakes_total._value.get()
+
+    assert await refunds.refund_round(pool, round_id, reason="lobby_underfilled") == 0
+
+    assert metrics.engine_rounds_voided_total._value.get() == before + 1
+    assert metrics.engine_rounds_voided_with_stakes_total._value.get() == with_stakes_before

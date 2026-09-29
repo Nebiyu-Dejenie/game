@@ -58,6 +58,16 @@ engine_rounds_voided_total = Counter(
     "Rounds voided and refunded (underfilled lobby, exhausted draw, crash recovery)",
 )
 
+# The subset of the above that refunded at least one stake. An empty room
+# voids a round every few minutes (nobody joined, or nobody was left to
+# win), so alerting on engine_rounds_voided_total would page all day with
+# nobody playing; a void that hands real stakes back is the event worth
+# looking at.
+engine_rounds_voided_with_stakes_total = Counter(
+    "engine_rounds_voided_with_stakes_total",
+    "Rounds voided that refunded at least one stake",
+)
+
 # --- ledger ------------------------------------------------------------------
 
 ledger_transactions_total = Counter(
