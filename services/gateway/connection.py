@@ -10,18 +10,21 @@ of that room's state. This handler only ever reads (queries.py) or forwards.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import json
 import time
 from typing import Any
 
 import asyncpg
+import redis.exceptions
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
 from redis.asyncio import Redis
 
 from packages.core import metrics, rate_limit, telegram_auth
 from packages.core.ledger import user_balance_snapshot
+from packages.core.redis_conn import MAX_CONNECTIONS
 from packages.core.telegram_auth import InvalidInitData
 from services.admin.simulated_players_queries import active_simulated_player_count
 from services.engine import commands
@@ -41,6 +44,19 @@ GOING_AWAY_RECONNECT_CODE = 1012  # "service restart" -- reconnect now, don't ba
 # the button locks for the rest of this connection instead of inventing
 # an arbitrary cooldown duration or refill rate.
 FALSE_CLAIM_SESSION_LIMIT = 3
+
+# Engine commands waiting for a reply, per gateway process and per player.
+# Each holds one of this process's pooled Redis connections until the
+# engine answers or COMMAND_TIMEOUT_SECONDS pass, and the rate limiter
+# shares that pool and fails closed. A room with no live engine answers
+# nothing, so ~200 players tapping take_card there used to empty the pool,
+# and from then on every player on the gateway was told to slow down
+# (platform audit, 2026-09-29). Past either cap a command is refused at
+# once. A socket handles one frame at a time, so a real player has at most
+# one command in flight per open Mini App.
+MAX_COMMANDS_IN_FLIGHT = MAX_CONNECTIONS // 2
+MAX_COMMANDS_IN_FLIGHT_PER_USER = 3
+_commands_in_flight_by_user: collections.Counter[int] = collections.Counter()
 
 
 def _is_real_int(value: object) -> bool:
@@ -391,6 +407,14 @@ class ConnectionHandler:
             await self._send_error("bad_room_id", "room_id required.", "የክፍል መለያ ያስፈልጋል።")
             return
         assert self._user_id is not None
+        # Checked before anything reaches Redis: send_command's XADD creates
+        # room:{room_id}:cmds, and no engine reads, trims or expires a
+        # stream for a room it doesn't own, so a made-up room_id per frame
+        # used to leave one permanent key per frame (platform audit,
+        # 2026-09-29).
+        if not await queries.room_exists(self._pool, room_id):
+            await self._send_error("bad_room_id", "Unknown room.", "ያልታወቀ ክፍል።")
+            return
 
         if bucket is not None:
             allowed = await rate_limit.allow(
@@ -412,18 +436,33 @@ class ConnectionHandler:
         # recorded under the "join" label, and the real "join" WS message
         # type (handled entirely separately by _handle_join(), which
         # never reaches this method at all) never recorded anything.
+        if _commands_in_flight_by_user[self._user_id] >= MAX_COMMANDS_IN_FLIGHT_PER_USER:
+            await self._send_error("rate_limited", "Too many requests.", "በጣም ብዙ ጥያቄዎች።")
+            return
+        if _commands_in_flight_by_user.total() >= MAX_COMMANDS_IN_FLIGHT:
+            await self._send_error(
+                "room_unavailable", "This room isn't available right now.", "ይህ ክፍል አሁን አይገኝም።"
+            )
+            return
         with metrics.gateway_command_ack_seconds.labels(action=ack_name).time():
+            _commands_in_flight_by_user[self._user_id] += 1
             try:
                 result = await commands.send_command(
                     self._redis, room_id, action, self._user_id, payload
                 )
-            except CommandTimeout:
+            except (CommandTimeout, redis.exceptions.RedisError):
+                # A Redis error (the pool empty after all, a dropped
+                # connection) used to escape and close the player's socket.
                 await self._send_error(
                     "room_unavailable",
                     "This room isn't available right now.",
                     "ይህ ክፍል አሁን አይገኝም።",
                 )
                 return
+            finally:
+                _commands_in_flight_by_user[self._user_id] -= 1
+                if _commands_in_flight_by_user[self._user_id] <= 0:
+                    del _commands_in_flight_by_user[self._user_id]
 
             if action == "claim":
                 # "no_pattern" specifically, matching RoundEngine.claim()'s

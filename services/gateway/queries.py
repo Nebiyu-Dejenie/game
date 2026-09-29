@@ -109,6 +109,14 @@ async def invite_summary(pool: asyncpg.Pool, user_id: int) -> dict[str, Any]:
     return {"telegram_id": telegram_id, "referral_count": int(referral_count)}
 
 
+async def room_exists(pool: asyncpg.Pool, room_id: int) -> bool:
+    """Whether room_id is a real room, checked before any engine command
+    is sent for it. Not whether it's active: a round already running in a
+    room an admin has just deactivated still plays out, and its players
+    must still be able to claim."""
+    return bool(await pool.fetchval("SELECT EXISTS (SELECT 1 FROM rooms WHERE id = $1)", room_id))
+
+
 async def held_card_no_for_room(pool: asyncpg.Pool, room_id: int, user_id: int) -> int | None:
     """Resolves "the" card a user holds in a room's current round, for a
     drop_card/claim frame that didn't explicitly say which card (every
