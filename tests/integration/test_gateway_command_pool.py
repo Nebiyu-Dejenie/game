@@ -45,9 +45,14 @@ async def test_commands_waiting_on_an_ownerless_room_do_not_lock_out_other_playe
     waiting: list = []
     bystanders: list = []
     try:
-        for _ in range((MAX_CONNECTIONS + 10) // 30 + 1):
-            waiting += await asyncio.gather(*(_connect(gateway_server) for _ in range(30)))
-        bystanders = await asyncio.gather(*(_connect(gateway_server) for _ in range(20)))
+        # Five at a time: each connect's authentication runs three queries at
+        # once through the gateway's session-wide DB pool, and a bigger burst
+        # leaves that pool grown (idle connections live 5 minutes), which
+        # starved later tests of Postgres connections.
+        for _ in range((MAX_CONNECTIONS + 10) // 5 + 1):
+            waiting += await asyncio.gather(*(_connect(gateway_server) for _ in range(5)))
+        for _ in range(4):
+            bystanders += await asyncio.gather(*(_connect(gateway_server) for _ in range(5)))
 
         # A steady ramp, as players arriving over a couple of seconds would
         # be, rather than one burst.
