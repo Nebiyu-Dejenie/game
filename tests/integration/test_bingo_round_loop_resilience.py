@@ -19,7 +19,7 @@ import pytest
 import redis.exceptions
 
 from packages.core import bingo
-from services.engine import round_engine
+from services.engine import commands, round_engine
 from services.engine.round_engine import RoundEngine, load_room_config
 from tests.integration.conftest import create_funded_user, create_room
 
@@ -183,3 +183,29 @@ async def test_a_failed_per_call_update_is_retried_not_fatal_to_the_round(pool, 
     finally:
         await engine.stop()
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=15)
+
+
+async def test_a_redis_error_answering_one_command_does_not_stop_the_room_answering_the_next(
+    pool, redis, card_pool, conn
+):
+    """Platform audit #24: the reply publish at the end of _handle_command
+    had no error handling, so one Redis error there ended the room's only
+    command consumer. The round loop kept running and holding the room, and
+    every later take_card, drop_card, claim and set_auto timed out until a
+    restart."""
+    room_id = await create_room(conn, stake=Decimal("10.00"), min_players=3, lobby_seconds=60)
+    room = await load_room_config(pool, room_id)
+    flaky_redis = _RedisPublishFailsOnce(redis, lambda channel, _message: channel.startswith("cmdreply:"))
+    engine = RoundEngine(pool, flaky_redis, room, card_pool)
+    task = asyncio.create_task(engine.run_forever())
+    first, second = await create_funded_user(conn), await create_funded_user(conn)
+    try:
+        with pytest.raises(commands.CommandTimeout):  # its reply is the one that's lost
+            await commands.send_command(redis, room_id, "join", first, {"card_no": 1}, timeout=3)
+        assert flaky_redis.failed.is_set()
+
+        answered = await commands.send_command(redis, room_id, "join", second, {"card_no": 2}, timeout=5)
+        assert answered.ok, answered
+    finally:
+        await engine.stop()
+        await asyncio.wait_for(task, timeout=15)

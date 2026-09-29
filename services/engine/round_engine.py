@@ -1329,7 +1329,15 @@ class RoundEngine:
         # into a fixed id before the loop ever begins; every iteration
         # after that (success or error-retry alike) advances from a real
         # id, never re-resolving "now" a second time.
-        tail = await self._redis.xrevrange(stream, count=1)
+        while True:
+            try:
+                tail = await self._redis.xrevrange(stream, count=1)
+                break
+            except redis.exceptions.RedisError:
+                # Same reasoning as the xread retry below: raising here would
+                # leave the room running with nothing answering its commands.
+                logger.warning("serve_commands_redis_error_retrying", room_id=self._room.id, exc_info=True)
+                await asyncio.sleep(1.0)
         last_id: str
         if tail:
             resolved_id, _fields = tail[0]
@@ -1368,7 +1376,14 @@ class RoundEngine:
             for _stream_name, entries in response:
                 for entry_id, fields in entries:
                     last_id = entry_id
-                    await self._handle_command(fields)
+                    # _handle_command() contains its own failures; this is
+                    # the backstop, because anything escaping here ends the
+                    # room's only command consumer while the round loop
+                    # carries on (platform audit, 2026-09-29).
+                    try:
+                        await self._handle_command(fields)
+                    except Exception:
+                        logger.exception("engine_command_failed", room_id=self._room.id)
 
     async def _handle_command(self, fields: dict[str, str]) -> None:
         request_id = fields.get("request_id")
@@ -1413,7 +1428,16 @@ class RoundEngine:
             result = JoinResult(False, "internal_error")
 
         if request_id:
-            await self._redis.publish(
-                commands.reply_channel(request_id),
-                json.dumps({"ok": result.ok, "reason": result.reason, "payload": {}}),
-            )
+            # A lost reply costs that one caller a CommandTimeout; the
+            # action itself already happened or didn't. Raising here used to
+            # end _serve_commands(), so every later command in this room
+            # timed out until a restart (platform audit, 2026-09-29).
+            try:
+                await self._redis.publish(
+                    commands.reply_channel(request_id),
+                    json.dumps({"ok": result.ok, "reason": result.reason, "payload": {}}),
+                )
+            except redis.exceptions.RedisError:
+                logger.warning(
+                    "engine_command_reply_failed", room_id=self._room.id, action=action, exc_info=True
+                )
