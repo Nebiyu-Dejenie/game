@@ -175,9 +175,12 @@ async def request_withdrawal(
                 assert method_row is not None
                 method_id: int = method_row["id"]
 
+                # Six digits is a minimum width, not a maximum: lpad() alone cuts a
+                # longer string down, so past 999999 ten consecutive values shared one ref.
                 ref_row = await conn.fetchrow(
                     "SELECT 'WD-' || extract(year from now())::text || '-' || "
-                    "lpad(nextval('payment_ref_seq')::text, 6, '0') AS our_ref"
+                    "lpad(n::text, greatest(6, length(n::text)), '0') AS our_ref "
+                    "FROM nextval('payment_ref_seq') AS seq(n)"
                 )
                 assert ref_row is not None
                 our_ref: str = ref_row["our_ref"]
