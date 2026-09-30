@@ -45,11 +45,11 @@ the status column as items are verified or fixed.
 | 34 | high | `services/payments/withdrawals.py:180` | Seven-digit reference numbers truncate to six digits, so consecutive payment refs collide once payment_ref_seq reaches 1,000,000 | Fixed (797fe74), deploy pending |
 | 35 | high | `services/payments/withdrawals.py:361` | sweep_stuck_approved_payouts re-enqueues payouts that are only waiting in the queue, not lost, and adds a new duplicate every tick | Fixed (c1e3077), deploy pending |
 | 36 | medium | `packages/core/bonuses.py:90` | Concurrent welcome-bonus grants create two bonuses rows backed by one ledger credit, which poisons the bonus sweep for all players | Not yet verified |
-| 37 | medium | `packages/core/keno_autoplay.py:210` | Autoplay places a ticket after the player pressed Stop: stale session snapshot and no status re-check in the placement transaction | Not yet verified |
-| 38 | medium | `packages/core/keno_autoplay.py:221` | stop_on_loss / stop_on_win routinely overshoot by one round because round N+1's autoplay tickets are placed before round N's result is recorded | Not yet verified |
-| 39 | medium | `packages/core/keno_autoplay.py:231` | A round filled to capacity by other players' bets permanently stops everyone else's autoplay sessions | Not yet verified |
-| 40 | medium | `packages/core/keno_autoplay.py:236` | rounds_placed and exhaustion are updated in separate transactions from the ticket placement, so a crash can buy one extra round | Not yet verified |
-| 41 | medium | `packages/core/keno_autoplay.py:273` | record_settlement applies an incremental delta after the money commits and is never replayed, so a crash leaves net_position (and the stop thresholds) permanently wrong | Not yet verified |
+| 37 | medium | `packages/core/keno_autoplay.py:210` | Autoplay places a ticket after the player pressed Stop: stale session snapshot and no status re-check in the placement transaction | Already fixed (verified): place_ticket re-checks the session under a row lock |
+| 38 | medium | `packages/core/keno_autoplay.py:221` | stop_on_loss / stop_on_win routinely overshoot by one round because round N+1's autoplay tickets are placed before round N's result is recorded | Fixed (939a29b, same as #17), deploy pending |
+| 39 | medium | `packages/core/keno_autoplay.py:231` | A round filled to capacity by other players' bets permanently stops everyone else's autoplay sessions | Confirmed; skipping vs stopping on a round-level rejection is the operator's decision |
+| 40 | medium | `packages/core/keno_autoplay.py:236` | rounds_placed and exhaustion are updated in separate transactions from the ticket placement, so a crash can buy one extra round | Fixed (50f5753), deploy pending |
+| 41 | medium | `packages/core/keno_autoplay.py:273` | record_settlement applies an incremental delta after the money commits and is never replayed, so a crash leaves net_position (and the stop thresholds) permanently wrong | Partly fixed by 939a29b (stop-loss enforced from tickets at placement); stop_on_win and the session summary can still miss a result lost to a hard crash |
 | 42 | medium | `packages/core/keno_business_metrics.py:137` | Business-metrics refresh loads the whole 24 h ticket set into the engine process and crunches it in pure Python on the round engine's event loop every 60 s | Not yet verified |
 | 43 | medium | `packages/core/keno_tickets.py:202` | Replay short-circuit is not scoped to the user and runs before the per-user lock: cross-user ticket hijack, and a raw 500 on a concurrent retry | Already fixed by d24fc8a (verified); concurrent-retry test added (3ff3d57) |
 | 44 | medium | `packages/core/ledger.py:215` | Every ledger.post locks the single global system-account balance row, serializing all players on pot_escrow, provider_settlement, keno_reserve and promo_expense | Not yet verified |
@@ -58,12 +58,12 @@ the status column as items are verified or fixed.
 | 47 | medium | `services/bot/campaign_worker.py:171` | The campaign worker loads a whole campaign into the shared notification stream, so every transactional notification waits behind it | Not yet verified |
 | 48 | medium | `services/bot/notification_relay.py:207` | The relay waits for the slowest recipient in each batch, so one player's Telegram backoff or starved campaign messages stall everyone | Not yet verified |
 | 49 | medium | `services/engine/commands.py:89` | send_command leaks a pooled Redis connection whenever unsubscribe raises in its finally block | Not yet verified |
-| 50 | medium | `services/engine/keno_round_engine.py:187` | Circuit breaker re-trips every round within the same 24h window, demoting one tier per round down to the floor | Not yet verified |
+| 50 | medium | `services/engine/keno_round_engine.py:187` | Circuit breaker re-trips every round within the same 24h window, demoting one tier per round down to the floor | Fixed (c32384e), deploy pending |
 | 51 | medium | `services/engine/keno_round_engine.py:270` | Ticket-id hash snapshot at betting close can miss tickets committed by in-flight placements | Not yet verified |
 | 52 | medium | `services/engine/keno_round_engine.py:281` | Round transitions have no Postgres fence (no WHERE status = expected), and a worker that lost the lock mid-reveal still completes the draw and settles | Not yet verified |
 | 53 | medium | `services/engine/keno_round_engine.py:432` | Round N's single-transaction settlement holds the keno_reserve balance-row lock while every round N+1 bet waits on it, holding the global round lock and a pool connection | Not yet verified |
 | 54 | medium | `services/engine/keno_round_engine.py:442` | Whole-round settlement in one transaction holds the keno_reserve (and jackpot) balance-row lock, stalling every next-round bet until it commits | Not yet verified |
-| 55 | medium | `services/engine/keno_round_engine.py:481` | Autoplay net_position is applied outside the settlement transaction, so a crash after commit skips it permanently | Not yet verified |
+| 55 | medium | `services/engine/keno_round_engine.py:481` | Autoplay net_position is applied outside the settlement transaction, so a crash after commit skips it permanently | Partly fixed by 939a29b (as #41) |
 | 56 | medium | `services/engine/keno_round_engine.py:523` | _settle_one_ticket posts the payout before claiming the ticket, and _pay_jackpot runs even when the claim failed | Fixed (9c06c90), deploy pending |
 | 57 | medium | `services/engine/keno_round_engine.py:550` | Several 5/5 jackpot tickets in one round: the first in unordered fetch order takes the whole pool, the rest get nothing | Confirmed (strict xfail); the multi-winner rule is the operator's decision |
 | 58 | medium | `services/engine/refunds.py:80` | The single global pot_escrow balance row serializes every Bingo money move in every room, and refunds hold it across all entrants | Not yet verified |
@@ -94,7 +94,7 @@ the status column as items are verified or fixed.
 | 83 | low | `packages/core/campaigns.py:93` | Notification Center audiences include simulated players | Not yet verified |
 | 84 | low | `packages/core/keno_autoplay.py:146` | start_session surfaces expected races and validation errors as raw 500s | Not yet verified |
 | 85 | low | `packages/core/keno_tier_automation.py:123` | No demotion when the reserve is below every tier's min_reserve (negative reserve) | Not yet verified |
-| 86 | low | `packages/core/keno_tier_automation.py:221` | Circuit breaker demotes one tier every round while the 24 h window stays hot, and scans the whole ledger each round | Not yet verified |
+| 86 | low | `packages/core/keno_tier_automation.py:221` | Circuit breaker demotes one tier every round while the 24 h window stays hot, and scans the whole ledger each round | Demotion half fixed with #50; the per-round 24h ledger scan remains |
 | 87 | low | `packages/core/ledger.py:404` | publish_balance_update raises on a Redis error after the money has already committed, so callers lose the follow-up notification or abort their loop | Not yet verified |
 | 88 | low | `packages/core/referrals.py:85` | Referral rewards are granted, and bonuses converted, regardless of the recipient's account status | Not yet verified |
 | 89 | low | `packages/core/referrals.py:147` | The referral cap and welcome grant are check-then-act with no lock or constraint of their own, and bonuses.grant_txn_id is not UNIQUE (safe today only because of the provider_settlement lock) | Not yet verified |
@@ -457,7 +457,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `packages/core/keno_autoplay.py:210`
-- **Status** Not yet verified
+- **Status** Already fixed (verified): place_ticket re-checks the session under a row lock
 - **Trigger** Betting opens, and place_for_active_sessions reads every active session once (line 210), then places tickets one at a time. The player taps Stop: DELETE /api/keno/autoplay commits status='stopped' and returns {"stopped": true}. This happens after the snapshot but before the loop reaches their session. That takes seconds with many sessions, or while round N's settlement holds the reserve lock (see the settlement-lock finding). _place_for_session calls place_ticket, which never looks at keno_autoplay_sessions.status. The rounds_placed UPDATE at 237-241 has no status filter either.
 - **Impact** A real-money stake is taken for a round after the server has told the player the session is stopped: one unwanted bet per stop, affecting any autoplay user who stops while a placement pass is running.
 - **Suggested fix** When autoplay_session_id is given, run SELECT status FROM keno_autoplay_sessions WHERE id=$1 FOR UPDATE inside place_ticket's transaction and raise a TicketRejected subclass if it is not 'active'. Increment rounds_placed in that same transaction. stop_session then serializes against placement.
@@ -466,7 +466,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** large, **finder confidence** medium
 - **Where** `packages/core/keno_autoplay.py:221`
-- **Status** Not yet verified
+- **Status** Fixed (939a29b, same as #17), deploy pending
 - **Trigger** Round N's draw finishes, then _spawn_settlement(N) runs as a background task, and the main loop immediately creates round N+1 and calls place_for_active_sessions (keno_round_engine.py:150-151, 245). record_settlement for N's tickets runs only in settlement's post-commit loop (keno_round_engine.py:478). With a large round N, that loop has usually not reached a given session when N+1's placement pass runs. _place_for_session never compares net_position (or the session's still-pending tickets) against the thresholds before placing.
 - **Impact** A player whose loss in round N crosses stop_on_loss_amount is still charged for round N+1, so they lose up to one extra stake (up to 200 ETB at Tier 4) beyond the limit they chose. The same happens after a stop_on_win. The outcome depends on timing, and it happens more often as rounds get bigger.
 - **Suggested fix** Before placing, treat the session's unsettled tickets as worst-case losses: if net_position - SUM(stake of this session's pending tickets) - stake <= -stop_on_loss_amount, skip or stop. Alternatively, run the autoplay placement pass only after the previous round's record_settlement pass has completed.
@@ -475,7 +475,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** medium
 - **Where** `packages/core/keno_autoplay.py:231`
-- **Status** Not yet verified
+- **Status** Confirmed; skipping vs stopping on a round-level rejection is the operator's decision
 - **Trigger** _open_betting publishes keno.betting.open (engine line 232) before running autoplay placement (line 248). Manual bets, for example one large bet, can fill the round's exposure ceiling (reserve x max_round_exposure_pct, small at launch) first. Each later autoplay placement then raises RoundCapacityReached, or UserRoundShareExceeded, whose ceiling is derived from the round. _place_for_session treats any TicketRejected as terminal and sets status='stopped' with reason ticket_rejected:round_capacity_reached.
 - **Impact** Other players' autoplay and multi-race sessions end for good because of someone else's bet in a single round, instead of skipping that round. They must notice and restart.
 - **Suggested fix** Treat round-level, transient rejections (RoundCapacityReached, RoundNotAcceptingBets) as 'skip this round': log it, keep the session active, and optionally cap consecutive skips. Stop only on player-level rejections such as insufficient balance, a responsible-gaming block, or a simulated player.
@@ -484,7 +484,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `packages/core/keno_autoplay.py:236`
-- **Status** Not yet verified
+- **Status** Fixed (50f5753), deploy pending
 - **Trigger** place_ticket commits (transaction 1), then the process is hard-killed before the rounds_placed UPDATE (transaction 2, line 237) or before the exhaustion _stop_internal (line 248). On the next round, the session is still active with a stale rounds_placed, and nothing checks rounds_placed >= rounds_total before placing.
 - **Impact** A player who bought N rounds is charged for N+1 tickets. The trigger is rare (a hard crash in a window of milliseconds), but the extra real-money bet is not refunded.
 - **Suggested fix** Increment rounds_placed and set status='exhausted' inside place_ticket's transaction (keyed by autoplay_session_id), or derive rounds_placed from COUNT(keno_tickets WHERE autoplay_session_id=S). Add a pre-placement guard: if rounds_total is not None and rounds_placed >= rounds_total, mark the session exhausted and skip.
@@ -493,7 +493,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** medium
 - **Where** `packages/core/keno_autoplay.py:273`
-- **Status** Not yet verified
+- **Status** Partly fixed by 939a29b (stop-loss enforced from tickets at placement); stop_on_win and the session summary can still miss a result lost to a hard crash
 - **Trigger** The engine process is hard-killed (OOM, SIGKILL, host crash) after _settle_tickets' batch transaction commits but before the post-commit loop calls record_settlement_safely for every ticket. On recovery, the retried settlement skips those tickets (status is no longer 'pending'), so their delta is never added. Separately, WHERE status='active' drops the result of the final ticket of any session that was exhausted or stopped at placement time.
 - **Impact** The session's net_position misses the lost results, so stop_on_loss fires late by the missed amount and the player loses more than the threshold they set. For multi-race sessions, the final summary (keno.js announceAutoplayEnded 'won' flag) always excludes the last round.
 - **Suggested fix** Make it idempotent: recompute net_position = SUM(COALESCE(payout,0)+COALESCE(jackpot_payout,0)-stake) FROM keno_tickets WHERE autoplay_session_id=$1 AND status IN ('won','lost'), set it, and check the thresholds. Call this for active sessions from recovery as well.
@@ -574,7 +574,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** medium
 - **Where** `services/engine/keno_round_engine.py:187`
-- **Status** Not yet verified
+- **Status** Fixed (c32384e), deploy pending
 - **Trigger** Trailing-24h keno_payout plus keno_jackpot_payout credits exceed daily_payout_circuit_breaker_multiple (default 3.0) times the expected payout. Jackpot payouts count toward actual, but expected_payout_contribution excludes jackpot EV. The first _create_round demotes one tier. check_circuit_breaker (packages/core/keno_tier_automation.py:243) keeps no memory of having tripped, and the window still exceeds the multiple, so each later _create_round (about every 37s) demotes again.
 - **Impact** One hot 24h window, such as a single large win or jackpot on a low-volume day, pushes every player to Tier 1's stake, pick and max-win limits within a few rounds instead of a single step. Promotion back then needs a 7-day hold. Spec 7.3 says 'demote a tier'.
 - **Suggested fix** Skip the breaker when a trigger='circuit_breaker' keno_tier_changes row already exists in the trailing 24h, or store a trip timestamp in keno_tier_state. Consider excluding keno_jackpot_payout from actual, or adding jackpot EV to expected.
@@ -619,7 +619,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** medium
 - **Where** `services/engine/keno_round_engine.py:481`
-- **Status** Not yet verified
+- **Status** Partly fixed by 939a29b (as #41)
 - **Trigger** The worker is SIGKILLed or OOM-killed, or docker's default 10s stop timeout expires while run_forever's drain is still waiting on settlement. This happens after _settle_tickets' batch transaction commits (line 467) but before the post-commit loop reaches a ticket's record_settlement_safely. The retry pass never sees the ticket again because it is no longer 'pending'. record_settlement_safely's settlement_error stop runs only on an in-process exception, so the session is not stopped either.
 - **Impact** The autoplay session keeps running with a net_position missing one round's result. stop_on_loss fires late (or stop_on_win never fires), and the player is charged beyond their chosen limit. The keno.ticket.settled push for those tickets is also lost.
 - **Suggested fix** Apply UPDATE keno_autoplay_sessions SET net_position = net_position + $delta inside the batch transaction, next to the ticket status change. Keep only the threshold check/stop and the publishes post-commit, and make the threshold check re-read net_position so it is safe to re-run.
@@ -898,7 +898,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** low, **fix size** small, **finder confidence** high
 - **Where** `packages/core/keno_tier_automation.py:221`
-- **Status** Not yet verified
+- **Status** Demotion half fixed with #50; the per-round 24h ledger scan remains
 - **Trigger** Trailing-24h payouts exceed the configured multiple. check_circuit_breaker runs on every _create_round (about every 37 s) with no check for a breaker demotion already recorded in the window, so it demotes again each round until it reaches the floor tier. At the floor it increments keno_tier_changes_total{trigger='circuit_breaker'} every round even though nothing changed. The actual_payout aggregate filters ledger_transactions by kind and created_at, and the table has only pkey and idempotency_key indexes.
 - **Impact** One hot hour drops Tier 4 to Tier 1 within about 2 minutes, instead of the single demotion the spec describes. Promotion back then needs a 7-day hold, which changes limits for every player. The metric counts false changes. A full ledger seq scan (all games' history) runs on the engine's round-creation path while keno_tier_state is held FOR UPDATE, and it slows every round as the ledger grows.
 - **Suggested fix** Skip the breaker if keno_tier_changes has a trigger='circuit_breaker' row within the last 24 h, and do not count a change at the floor. Add an index on ledger_transactions(kind, created_at), or aggregate from keno_tickets.payout/jackpot_payout instead.
