@@ -459,7 +459,12 @@ class KenoRoundEngine:
                         conn, ticket_id=ticket["id"], round_id=round_id, user_id=ticket["user_id"],
                         matches=matches, payout=payout,
                     )
-                    if is_jackpot:
+                    # Only the pass that claimed the ticket pays its jackpot.
+                    # Another pass that read it as pending too used to find
+                    # the jackpot's ledger key already posted, move nothing,
+                    # and still write the pool's newly accumulated balance
+                    # into jackpot_payout (platform audit, 2026-09-30).
+                    if is_jackpot and settled:
                         jackpot_payout = await self._pay_jackpot(
                             conn, round_id=round_id, ticket_id=ticket["id"], user_id=ticket["user_id"]
                         )
@@ -523,7 +528,21 @@ class KenoRoundEngine:
         self, conn: ledger.AsyncpgConnection, *, ticket_id: int, round_id: int, user_id: int, matches: int, payout: Decimal
     ) -> bool:
         status = "won" if payout > 0 else "lost"
-        payout_txn_id: int | None = None
+        # Claim first, pay second. The claim row-locks the ticket and fails
+        # if anything else already took it out of 'pending' (another pass,
+        # a refund), so nothing is paid for a ticket this pass doesn't own.
+        # The payout used to be posted before the claim and stayed in the
+        # transaction when the claim failed (platform audit, 2026-09-30).
+        claimed = await conn.fetchval(
+            "UPDATE keno_tickets SET status = $2, matches = $3, payout = $4, settled_at = now() "
+            "WHERE id = $1 AND status = 'pending' RETURNING id",
+            ticket_id,
+            status,
+            matches,
+            payout,
+        )
+        if claimed is None:
+            return False  # already settled by a prior (crashed/redelivered) or overlapping attempt
         if payout > 0:
             reserve_account = await ledger.get_or_create_account(conn, None, "keno_reserve")
             cash_account = await ledger.get_or_create_account(conn, user_id, "user_cash")
@@ -534,17 +553,8 @@ class KenoRoundEngine:
                 idempotency_key=f"keno:settle:{round_id}:{ticket_id}",
                 created_by="keno_round_engine",
             )
-            payout_txn_id = txn.id
-        result = await conn.execute(
-            "UPDATE keno_tickets SET status = $2, matches = $3, payout = $4, payout_txn_id = $5, settled_at = now() "
-            "WHERE id = $1 AND status = 'pending'",
-            ticket_id,
-            status,
-            matches,
-            payout,
-            payout_txn_id,
-        )
-        return result == "UPDATE 1"  # False if already settled by a prior (crashed/redelivered) attempt
+            await conn.execute("UPDATE keno_tickets SET payout_txn_id = $2 WHERE id = $1", ticket_id, txn.id)
+        return True
 
     async def _pay_jackpot(self, conn: ledger.AsyncpgConnection, *, round_id: int, ticket_id: int, user_id: int) -> Decimal:
         """Part 8.3: the jackpot pays only from its own pool balance and

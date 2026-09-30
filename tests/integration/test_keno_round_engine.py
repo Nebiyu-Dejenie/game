@@ -854,3 +854,92 @@ async def test_autoplay_stop_loss_is_not_overshot_by_the_round_that_opens_during
     assert (session_row["status"], session_row["stop_reason"]) == ("stopped", "stop_on_loss")
     assert [t["status"] for t in tickets] == ["lost"]
     assert cash == Decimal("990.00")  # lost exactly the 10.00 limit, not 20.00
+
+
+async def _top_up_jackpot(pool: asyncpg.Pool, amount: Decimal) -> None:
+    """A stake's jackpot diversion, as place_ticket posts it (kind
+    keno_stake), all of it into the pool."""
+    async with pool.acquire() as conn:
+        user_id = await create_funded_user(conn, amount)
+        cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
+        jackpot = await ledger.get_or_create_account(conn, None, "keno_jackpot_pool")
+        await ledger.post(
+            conn, "keno_stake", [ledger.Entry(cash.id, -amount), ledger.Entry(jackpot.id, amount)],
+            idempotency_key=f"test-jackpot-top-up-{uuid.uuid4()}", created_by="test",
+        )
+
+
+async def test_an_overlapping_second_settlement_pass_does_not_rewrite_a_paid_jackpot(pool, redis, monkeypatch):
+    """Platform audit #56: _settle_one_ticket posted the payout before
+    claiming the ticket, and _pay_jackpot ran whether or not the claim
+    succeeded. A second settlement pass that read the ticket as pending
+    before the first committed found the jackpot's ledger key already
+    posted (so no second payment), but then wrote the pool's newly
+    accumulated balance into keno_tickets.jackpot_payout, so the ticket
+    and the round total showed a jackpot the player was never paid."""
+    async with pool.acquire() as conn:
+        await _seed_fast_config_and_tier(conn)
+        config_id = await conn.fetchval("SELECT id FROM keno_configs ORDER BY id DESC LIMIT 1")
+        tier_id = await conn.fetchval("SELECT id FROM keno_risk_tiers ORDER BY id DESC LIMIT 1")
+        paytable_id = await conn.fetchval("SELECT id FROM keno_paytables ORDER BY id DESC LIMIT 1")
+        drawn = list(range(1, 21))
+        round_id = await conn.fetchval(
+            "INSERT INTO keno_rounds (seq, status, config_id, tier_id, server_seed, server_seed_hash, drawn_numbers) "
+            "VALUES ((SELECT COALESCE(MAX(seq), 0) + 1 FROM keno_rounds), 'settling', $1, $2, $3, 'h', $4) "
+            "RETURNING id",
+            config_id, tier_id, b"seed", drawn,
+        )
+        user_id = await create_funded_user(conn, Decimal("0"))
+        ticket_id = await conn.fetchval(
+            "INSERT INTO keno_tickets (round_id, user_id, paytable_id, pick_count, stake, status, idempotency_key) "
+            "VALUES ($1, $2, $3, 5, 10, 'pending', $4) RETURNING id",
+            round_id, user_id, paytable_id, f"test-jackpot-race-{uuid.uuid4()}",
+        )
+        await conn.executemany(
+            "INSERT INTO keno_ticket_selections (ticket_id, number) VALUES ($1, $2)",
+            [(ticket_id, n) for n in (1, 2, 3, 4, 5)],
+        )
+    await _top_up_jackpot(pool, Decimal("500.00"))
+
+    engine = KenoRoundEngine(pool, redis)
+    first_inside, release_first = asyncio.Event(), asyncio.Event()
+    real_settle_one, real_pay = engine._settle_one_ticket, engine._pay_jackpot
+    settle_calls = pay_calls = 0
+
+    async def settle_one(conn, **kwargs):
+        nonlocal settle_calls
+        settle_calls += 1
+        mine = settle_calls
+        settled = await real_settle_one(conn, **kwargs)
+        if mine == 1:  # hold the first pass's transaction open
+            first_inside.set()
+            await release_first.wait()
+        return settled
+
+    async def pay(conn, **kwargs):
+        nonlocal pay_calls
+        pay_calls += 1
+        if pay_calls == 2:  # stakes keep feeding the pool between the passes
+            await _top_up_jackpot(pool, Decimal("777.00"))
+        return await real_pay(conn, **kwargs)
+
+    monkeypatch.setattr(engine, "_settle_one_ticket", settle_one)
+    monkeypatch.setattr(engine, "_pay_jackpot", pay)
+
+    first = asyncio.create_task(engine._settle_tickets(round_id, drawn))
+    await asyncio.wait_for(first_inside.wait(), timeout=10)
+    second = asyncio.create_task(engine._settle_tickets(round_id, drawn))
+    await asyncio.sleep(0.5)  # the second pass has read the ticket as pending and is now waiting on the first
+    release_first.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=15)
+
+    async with pool.acquire() as conn:
+        paid = await conn.fetchval(
+            "SELECT e.amount FROM ledger_transactions t JOIN ledger_entries e ON e.transaction_id = t.id "
+            "JOIN accounts a ON a.id = e.account_id "
+            "WHERE t.idempotency_key = $1 AND a.kind = 'user_cash'",
+            f"keno:jackpot:{round_id}:{ticket_id}",
+        )
+        recorded = await conn.fetchval("SELECT jackpot_payout FROM keno_tickets WHERE id = $1", ticket_id)
+    assert paid is not None and paid >= Decimal("500.00")
+    assert recorded == paid
