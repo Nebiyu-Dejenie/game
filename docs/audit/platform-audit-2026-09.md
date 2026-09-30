@@ -51,7 +51,7 @@ the status column as items are verified or fixed.
 | 40 | medium | `packages/core/keno_autoplay.py:236` | rounds_placed and exhaustion are updated in separate transactions from the ticket placement, so a crash can buy one extra round | Not yet verified |
 | 41 | medium | `packages/core/keno_autoplay.py:273` | record_settlement applies an incremental delta after the money commits and is never replayed, so a crash leaves net_position (and the stop thresholds) permanently wrong | Not yet verified |
 | 42 | medium | `packages/core/keno_business_metrics.py:137` | Business-metrics refresh loads the whole 24 h ticket set into the engine process and crunches it in pure Python on the round engine's event loop every 60 s | Not yet verified |
-| 43 | medium | `packages/core/keno_tickets.py:202` | Replay short-circuit is not scoped to the user and runs before the per-user lock: cross-user ticket hijack, and a raw 500 on a concurrent retry | Not yet verified |
+| 43 | medium | `packages/core/keno_tickets.py:202` | Replay short-circuit is not scoped to the user and runs before the per-user lock: cross-user ticket hijack, and a raw 500 on a concurrent retry | Already fixed by d24fc8a (verified); concurrent-retry test added (3ff3d57) |
 | 44 | medium | `packages/core/ledger.py:215` | Every ledger.post locks the single global system-account balance row, serializing all players on pot_escrow, provider_settlement, keno_reserve and promo_expense | Not yet verified |
 | 45 | medium | `services/admin/bonus_queries.py:178` | Admin manual bonus grant is not idempotent: the key embeds the server timestamp, so a double-click or retry grants twice | Fixed, deployed (a7603c5) |
 | 46 | medium | `services/admin/keno_queries.py:580` | Reserve withdrawal floor check is released before the debit (TOCTOU across three transactions) | Not yet verified |
@@ -64,8 +64,8 @@ the status column as items are verified or fixed.
 | 53 | medium | `services/engine/keno_round_engine.py:432` | Round N's single-transaction settlement holds the keno_reserve balance-row lock while every round N+1 bet waits on it, holding the global round lock and a pool connection | Not yet verified |
 | 54 | medium | `services/engine/keno_round_engine.py:442` | Whole-round settlement in one transaction holds the keno_reserve (and jackpot) balance-row lock, stalling every next-round bet until it commits | Not yet verified |
 | 55 | medium | `services/engine/keno_round_engine.py:481` | Autoplay net_position is applied outside the settlement transaction, so a crash after commit skips it permanently | Not yet verified |
-| 56 | medium | `services/engine/keno_round_engine.py:523` | _settle_one_ticket posts the payout before claiming the ticket, and _pay_jackpot runs even when the claim failed | Not yet verified |
-| 57 | medium | `services/engine/keno_round_engine.py:550` | Several 5/5 jackpot tickets in one round: the first in unordered fetch order takes the whole pool, the rest get nothing | Not yet verified |
+| 56 | medium | `services/engine/keno_round_engine.py:523` | _settle_one_ticket posts the payout before claiming the ticket, and _pay_jackpot runs even when the claim failed | Fixed (9c06c90), deploy pending |
+| 57 | medium | `services/engine/keno_round_engine.py:550` | Several 5/5 jackpot tickets in one round: the first in unordered fetch order takes the whole pool, the rest get nothing | Confirmed (strict xfail); the multi-winner rule is the operator's decision |
 | 58 | medium | `services/engine/refunds.py:80` | The single global pot_escrow balance row serializes every Bingo money move in every room, and refunds hold it across all entrants | Not yet verified |
 | 59 | medium | `services/engine/round_engine.py:348` | Emergency stop does not stop new stakes: the engine's join() idle fallback starts a round without checking rooms.is_active | Not yet verified |
 | 60 | medium | `services/engine/round_engine.py:843` | Exhausted-round refund leaves the status at 'running', so a late claim is acknowledged and then the round is voided; the orphaned settlement task can crash the engine | Not yet verified |
@@ -511,7 +511,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `packages/core/keno_tickets.py:202`
-- **Status** Not yet verified
+- **Status** Already fixed by d24fc8a (verified); concurrent-retry test added (3ff3d57)
 - **Trigger** (a) Player B sends idempotency_key 'autoplay:<S>:<R+1>', where S is player A's autoplay session id (sequential; B sees their own) and R+1 is the next round id, during round R. B's ticket is stored under that key. When round R+1 opens, place_for_active_sessions calls place_ticket for A's session, and line 202 (no user_id filter) returns B's ticket as if it were A's. (b) The same user sends the same key twice concurrently (a retry while the first request is in flight). Both pass the SELECT at 202 before pg_advisory_xact_lock at 234. The second then re-validates after the first commits: it either raises TooManyTicketsThisRound or RoundCapacityReached, or ledger.post returns the first transaction and the INSERT hits keno_tickets_idempotency_key_key, an asyncpg.UniqueViolationError that the gateway does not catch (it only catches TicketRejected).
 - **Impact** (a) A's session counts a round (rounds_placed +1, and early exhaustion for multi-race) without A having any ticket. B also learns A's ticket stake and status. The replayed PlacedTicket carries the current request's picks, not the stored ones. (b) The player gets a 500 or a rejection for a ticket that was actually placed and charged, and may tap again with a fresh key and bet twice without meaning to. No double debit by itself.
 - **Suggested fix** Move the idempotency SELECT to after pg_advisory_xact_lock(user_id), filter it by user_id (or use the namespaced key from the critical finding), and return the stored picks. Build autoplay keys in a server-only namespace that a client key can never produce.
@@ -628,7 +628,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** medium
 - **Where** `services/engine/keno_round_engine.py:523`
-- **Status** Not yet verified
+- **Status** Fixed (9c06c90), deploy pending
 - **Trigger** ledger.post(keno_payout, key keno:settle:R:T) runs first. UPDATE ... WHERE status='pending' runs after it, and a False result only suppresses the publish; the payout stays in the committed transaction. If T left 'pending' under a different key, for example a refund (keno:refund:R:T) from another worker's recover_on_startup during split-brain, the payout still commits. In addition, _pay_jackpot (lines 457-460) is called whether or not settled is True. On a second concurrent settlement pass, its ledger.post dedupes, but line 561 overwrites keno_tickets.jackpot_payout with the pool's current re-accumulated balance.
 - **Impact** Latent double credit (refund plus win) whenever a refund and a settlement overlap on one ticket. keno_tickets.jackpot_payout, and the round total_payout recomputed from it, can be rewritten to a wrong amount, so the player's history shows a jackpot different from what was paid. Not reachable with a single worker and no concurrent refunder.
 - **Suggested fix** First run UPDATE keno_tickets SET status=... WHERE id=$1 AND status='pending' RETURNING id (this row-locks the ticket). Only on success, post the payout and then set payout_txn_id. Call _pay_jackpot only when the claim succeeded, and write jackpot_payout from the posted transaction's amount.
@@ -637,7 +637,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** medium
 - **Where** `services/engine/keno_round_engine.py:550`
-- **Status** Not yet verified
+- **Status** Confirmed (strict xfail); the multi-winner rule is the operator's decision
 - **Trigger** Two or more 5-spot tickets hit 5/5 in the same round. This is realistic with correlated picks: players choosing the same popular set, or one player holding several identical tickets. _settle_tickets loops over tickets fetched with no ORDER BY (line 407). The first winner's _pay_jackpot posts the entire pool balance. For each later winner, ledger.balance in the same transaction returns 0 and _pay_jackpot returns Decimal(0).
 - **Impact** The later winner sees a 5/5 hit, but keno.ticket.settled carries jackpot_payout=null. Heap/scan order, not any stated rule, decides which player gets the jackpot, so one player's ticket takes another's.
 - **Suggested fix** Collect every jackpot-qualifying ticket in the round first, then split the locked pool balance equally, rounding down to the cent with the remainder left in the pool. Post each share under its own keno:jackpot:R:T key and document the split rule.
