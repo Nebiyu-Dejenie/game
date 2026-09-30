@@ -72,7 +72,7 @@ the status column as items are verified or fixed.
 | 61 | medium | `services/engine/round_engine.py:1280` | Commands whose gateway call already timed out still run later, charging players who were told the action failed | Not yet verified |
 | 62 | medium | `services/engine/round_engine.py:1303` | The engine ignores the claim's round_id, so a stale claim is judged against the current round and can lock out a paid card | Not yet verified |
 | 63 | medium | `services/gateway/app.py:514` | Keno ticket per-IP rate-limit bucket (20/min) is shared by every player behind the same carrier NAT | Not yet verified |
-| 64 | medium | `services/gateway/app.py:657` | hot-cold endpoint's lookback_rounds is not clamped; one request can load all Keno history and block the gateway event loop | Not yet verified |
+| 64 | medium | `services/gateway/app.py:657` | hot-cold endpoint's lookback_rounds is not clamped; one request can load all Keno history and block the gateway event loop | Fixed (f732569), deploy pending |
 | 65 | medium | `services/gateway/fanout.py:80` | When a ConnectionQueue overflows with a non-droppable message, queued round_end/balance_update messages are discarded without triggering a resync | Not yet verified |
 | 66 | medium | `services/payments/app.py:283` | payout_queue_depth uses XLEN on a stream that is never trimmed, so the depth alert is always on and cannot reveal a stalled consumer | Not yet verified |
 | 67 | medium | `services/payments/bonus_sweep.py:32` | The bonus sweep has no per-item isolation: one failing bonus, or a Redis publish error, aborts the rest of the tick for every other player | Not yet verified |
@@ -700,7 +700,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/gateway/app.py:657`
-- **Status** Not yet verified
+- **Status** Fixed (f732569), deploy pending
 - **Trigger** Any authenticated player calls GET /api/keno/rounds/hot-cold?lookback_rounds=100000000, repeatedly (this endpoint has no rate limit). keno_queries.hot_cold_numbers (packages/core/keno_queries.py:236) runs `LIMIT $1` with no cap, fetches every completed round's drawn_numbers, then counts them in a pure-Python loop on the event loop. A negative value produces a 500.
 - **Impact** Grows with history: about 1,440 rounds per day, so about 10M numbers after a year. Each call blocks the single gateway event loop for seconds, stalling WS fan-out, command acks and every other player's REST call on that replica, and puts heavy reads on Postgres.
 - **Suggested fix** Clamp lookback_rounds with `min(max(lookback_rounds, 1), 500)`, the way my_tickets and recent_results already do. Optionally cache the result per completed round.
