@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -672,7 +672,13 @@ async def api_keno_recent_results(limit: int = 20, authorization: str = Header(d
 
 
 @app.get("/api/keno/rounds/hot-cold")
-async def api_keno_hot_cold(lookback_rounds: int = 50, authorization: str = Header(default="")) -> dict[str, Any]:
+async def api_keno_hot_cold(
+    # Bounded (platform audit, 2026-09-30): it's the query's LIMIT, so a
+    # negative value was a 500 and a huge one loaded all of Keno's history
+    # into this process. The Mini App asks for 50.
+    lookback_rounds: int = Query(default=50, ge=1, le=200),
+    authorization: str = Header(default=""),
+) -> dict[str, Any]:
     await _authenticated_user_id(authorization)
     return await keno_queries.hot_cold_numbers(app.state.pool, lookback_rounds=lookback_rounds)
 

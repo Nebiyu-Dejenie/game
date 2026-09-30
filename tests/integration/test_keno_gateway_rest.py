@@ -472,3 +472,18 @@ async def test_keno_state_visible_and_betting_allowed_once_allowlisted(gateway_s
         )
     assert ticket_response.status_code == 200, ticket_response.text
     assert ticket_response.json()["round_id"] == round_id
+
+
+async def test_hot_cold_lookback_is_bounded(gateway_server):
+    """Platform audit #64: lookback_rounds went straight into the query's
+    LIMIT. A negative value was a 500, and a huge one loaded every completed
+    round into the gateway process and counted them on its event loop. The
+    Mini App asks for 50."""
+    headers = {"Authorization": f"tma {build_init_data(next_telegram_id())}"}
+    url = f"{http_base(gateway_server)}/api/keno/rounds/hot-cold"
+    async with httpx.AsyncClient() as client:
+        statuses = [
+            (await client.get(url, params={"lookback_rounds": n}, headers=headers)).status_code
+            for n in (-1, 0, 50, 200, 201, 10**9)
+        ]
+    assert statuses == [422, 422, 200, 200, 422, 422]
