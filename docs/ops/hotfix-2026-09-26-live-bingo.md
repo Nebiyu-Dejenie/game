@@ -185,3 +185,143 @@ interrupted.
 Bingo rounds after the deploy were all empty (0 cards) and ended voided
 after ~5 minutes, as they did before it: nobody was playing, and an empty
 room keeps calling numbers so it never looks dead.
+
+## Step 4 (prepared 2026-09-30, not yet run): the Keno fixes and the audit's high findings
+
+Waiting on the network, not on code. The dev machine is on another network
+(Wi-Fi 10.64.6.x) and can't reach the server's LAN address. Production
+is unaffected (`/healthz` 200, still `a7603c5`).
+
+**What ships** (`a7603c5..main`, no migrations, alembic stays
+`b5d9e3a1c7f2`):
+- the three Keno audit fixes: `be4f873` (a drawn stuck round is settled,
+  not refunded), `6b3899e` (a ticket placed during a stuck-round refund is
+  refunded too), `939a29b` (autoplay stop-loss doesn't overshoot);
+- `24d2649`: a Keno reserve deposit or withdrawal happens once per
+  intended transfer (a double-clicked 30,000 deposit moved 60,000). This
+  is needed before the Stage 1 reserve funding;
+- the 13 fixed high findings in `docs/audit/platform-audit-2026-09.md`
+  (#15, #16, #19, #22 to #24, #26 to #31, #34, #35);
+- `fc4fd3b`, `d5c5703`: monitoring config (profile-gated, doesn't start).
+
+Verified before deploying: mypy clean; full suite 1,857 passed; the only
+failures were the two backup drills (they can't run against the
+throwaway database) and `test_full_campaign_to_delivery_flow_over_real_http`
+(fails identically on `4645669`).
+
+**All nine app containers restart**, because `packages/core` changed.
+Restarting the Bingo engine voids and refunds any round it owns, so the
+script stops before touching anything if a real (not simulated) player
+holds a card in an open round. Run it between rounds.
+
+```
+# dev machine
+git bundle create /tmp/step1.bundle a7603c5..main
+scp /tmp/step1.bundle deploy5.sh zemen-game-server:/tmp/
+ssh zemen-game-server 'bash /tmp/deploy5.sh'
+```
+
+The script (`/tmp/deploy5.sh` on the server):
+```bash
+#!/usr/bin/env bash
+# Step 1 deploy: the Keno fixes, the reserve double-post fix and the 13
+# verified high-finding fixes. a7603c5 -> main. No migrations.
+set -euo pipefail
+cd ~/apps/igame
+C="docker compose -f deploy/docker-compose.prod.yml"
+U=$($C exec -T postgres printenv POSTGRES_USER </dev/null); D=$($C exec -T postgres printenv POSTGRES_DB </dev/null)
+Q() { $C exec -T postgres psql -U "$U" -d "$D" -At -c "$1" </dev/null; }
+APPS="gateway admin payments bot sms engine-worker payout-worker simulated-players-worker keno-worker"
+
+echo "== pre-flight"
+echo "at: $(git rev-parse --short HEAD)  alembic: $(Q 'SELECT version_num FROM alembic_version')"
+git fetch -q /tmp/step1.bundle main:deploy/main-step1
+TARGET=$(git rev-parse --short deploy/main-step1); echo "fetched $TARGET"
+git diff --stat HEAD deploy/main-step1 -- migrations | tail -1
+# Restarting the engine voids and refunds any round it owns. Refuse if a
+# real (not simulated) player holds a card in any open round.
+LIVE=$(Q "SELECT count(*) FROM rounds r JOIN round_entries e ON e.round_id = r.id JOIN users u ON u.id = e.user_id
+          WHERE r.status IN ('lobby','running','settling') AND NOT u.is_simulated")
+echo "real players' cards in open Bingo rounds: $LIVE"
+if [ "$LIVE" != "0" ]; then echo "ABORT: real players in an open round; retry between rounds"; exit 1; fi
+echo "open Keno rounds with pending tickets: $(Q "SELECT count(*) FROM keno_tickets t JOIN keno_rounds k ON k.id = t.round_id WHERE t.status = 'pending'")"
+echo "Telebirr SMS deposits (operator switched off; expect f): $(Q "SELECT enabled||' since '||updated_at FROM payment_provider_availability WHERE provider = 'telebirr_sms' AND direction = 'in'")"
+
+echo "== backup and rollback image"
+COMPOSE_FILE=deploy/docker-compose.prod.yml POSTGRES_USER=$U BACKUP_DIR=$HOME/backups ./deploy/backup.sh "$D" </dev/null
+docker tag jobingo:latest jobingo:rollback-a7603c5
+
+BINGO_BEFORE=$(Q 'SELECT COALESCE(max(id), 0) FROM rounds'); KENO_BEFORE=$(Q 'SELECT COALESCE(max(id), 0) FROM keno_rounds')
+
+echo "== build and restart"
+git checkout -q --detach deploy/main-step1; echo "checked out $(git rev-parse --short HEAD)"
+docker build -q -t jobingo:latest . </dev/null >/dev/null; echo "built $(docker image inspect jobingo:latest --format '{{.Id}}' | cut -c8-19)"
+$C up -d --no-deps $APPS </dev/null 2>&1 | tail -3
+sleep 40
+
+echo "== verify"
+echo "alembic (expect b5d9e3a1c7f2): $(Q 'SELECT version_num FROM alembic_version')"
+echo "keno enabled|allowlist (expect f|t): $(Q "SELECT keno_enabled||'|'||beta_restricted FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1")"
+g() { printf '%-15s %-45s %s\n' "$1" "$3" "$($C exec -T "$1" grep -c "$3" "$2" </dev/null || true)"; }
+g keno-worker   services/engine/keno_round_engine.py 'drawn_numbers"\] is not None'
+g keno-worker   services/engine/keno_round_engine.py "status IN ('draw_complete', 'settling')"
+g gateway       packages/core/keno_tickets.py        'class AutoplayLossLimitPending'
+g gateway       services/gateway/connection.py       'MAX_COMMANDS_IN_FLIGHT = '
+g gateway       services/gateway/connection.py       'gateway_writer_failed'
+g engine-worker services/engine/round_engine.py      'claimed_at=call_time'
+g engine-worker services/engine/round_engine.py      'engine_command_reply_failed'
+g engine-worker services/engine/round_engine.py      'CALL_UPDATE_ATTEMPTS = '
+g payout-worker services/payments/withdrawals.py     'async def _refs_still_queued'
+g payout-worker services/payments/payout_worker.py   'payout_consumer_exited'
+g payout-worker services/payments/deposits.py        'deposit_poll_failed'
+g payments      services/payments/deposits.py        'event_id=f"{event.event_id}:{event.status}"'
+g payments      services/payments/withdrawals.py     'greatest(6, length(n::text))'
+g admin         services/admin/keno_queries.py       '_RESERVE_TRANSFER_LOCK_KEY = '
+g bot           services/bot/notification_relay.py   'DEAD_LETTER_STREAM = '
+g admin         web/admin/js/screens/keno/overview.js 'request_id: transferRequestId'
+echo "healthz: $(curl -s -o /dev/null -w '%{http_code}' https://arada.click/healthz)"
+$C ps --format '{{.Service}} {{.Status}}' </dev/null | grep -E "$(echo $APPS | tr ' ' '|')"
+for s in $APPS; do printf '%-26s errors in last 40s: %s\n' "$s" "$($C logs --since 40s $s </dev/null 2>&1 | grep -ciE 'traceback|exception|"level": "error"' || true)"; done
+echo "new rounds since restart: Bingo $(Q "SELECT count(*) FROM rounds WHERE id > $BINGO_BEFORE")  Keno $(Q "SELECT count(*) FROM keno_rounds WHERE id > $KENO_BEFORE")"
+echo "reconcile: $($C run --rm reconcile-job </dev/null 2>&1 | grep -o '"event": "[a-z_]*"' | tail -1)"
+rm -f /tmp/step1.bundle
+```
+
+**Rollback** (no schema change to undo):
+```
+docker tag jobingo:rollback-a7603c5 jobingo:latest
+docker compose -f deploy/docker-compose.prod.yml up -d --no-deps gateway admin payments bot sms engine-worker payout-worker simulated-players-worker keno-worker
+git checkout --detach a7603c5
+```
+
+**After it's green: Stage 1 reserve funding** (the operator's Step 2).
+Nothing is posted until the operator confirms the exact transaction:
+`keno_reserve_deposit`, house_float -30,000.00 and keno_reserve +30,000.00.
+It goes through the same audited function as the admin console's
+Deposit button, run in the admin container, with a fixed request_id so a
+re-run is a no-op rather than a second transfer:
+```python
+# docker compose -f deploy/docker-compose.prod.yml exec -T admin python - <ADMIN_ID> < reserve_funding.py
+import asyncio, sys
+from decimal import Decimal
+from packages.core import ledger
+from packages.core.config import get_settings
+from packages.core.db_pool import create_pool
+from services.admin import keno_queries
+
+async def main() -> None:
+    pool = await create_pool(dsn=get_settings().database_url, min_size=1, max_size=2)
+    try:
+        result = await keno_queries.deposit_to_reserve_admin(
+            pool, admin_id=int(sys.argv[1]), amount=Decimal("30000.00"),
+            reason="Stage 1 Keno prize reserve funding, confirmed by the operator",
+            request_id="stage1-reserve-funding-2026-09",
+        )
+        async with pool.acquire() as conn:
+            house_float = await ledger.get_or_create_account(conn, None, "house_float")
+            print(result, "house_float:", await ledger.balance(conn, house_float.id))
+    finally:
+        await pool.close()
+
+asyncio.run(main())
+```
