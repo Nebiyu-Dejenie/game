@@ -249,20 +249,9 @@ async def _place_for_session(pool: asyncpg.Pool, redis: Redis, session: Autoplay
         await _stop_internal(pool, session.id, status="stopped", reason=f"ticket_rejected:{exc.code}")
         logger.info("keno_autoplay_session_stopped_on_rejection", session_id=session.id, reason=exc.code)
         return
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE keno_autoplay_sessions SET rounds_placed = rounds_placed + 1, last_round_id = $2, "
-            "updated_at = now() WHERE id = $1",
-            session.id, round_id,
-        )
-    # Exhaustion (rounds_total reached) is checked right after
-    # placing, not after settlement -- "bought N rounds" means
-    # exactly N tickets placed, independent of how they each turn
-    # out. +1 accounts for the ticket just placed above, since
-    # session.rounds_placed was read before that UPDATE.
-    if session.rounds_total is not None and session.rounds_placed + 1 >= session.rounds_total:
-        await _stop_internal(pool, session.id, status="exhausted", reason="rounds_exhausted")
+    # rounds_placed, and exhaustion once rounds_total is reached ("bought
+    # N rounds" means exactly N tickets placed, however they turn out), are
+    # written by place_ticket() in the ticket's own transaction.
 
 
 async def _stop_after_error(pool: asyncpg.Pool, session_id: int, *, reason: str) -> None:

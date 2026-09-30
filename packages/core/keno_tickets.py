@@ -290,10 +290,13 @@ async def _place_ticket(
             # whichever commits first wins cleanly.
             if autoplay_session_id is not None:
                 session_row = await conn.fetchrow(
-                    "SELECT status, stop_on_loss_amount FROM keno_autoplay_sessions WHERE id = $1 FOR NO KEY UPDATE",
+                    "SELECT status, stop_on_loss_amount, rounds_total, rounds_placed "
+                    "FROM keno_autoplay_sessions WHERE id = $1 FOR NO KEY UPDATE",
                     autoplay_session_id,
                 )
                 if session_row is None or session_row["status"] != "active":
+                    raise AutoplaySessionNotActive(str(autoplay_session_id))
+                if session_row["rounds_total"] is not None and session_row["rounds_placed"] >= session_row["rounds_total"]:
                     raise AutoplaySessionNotActive(str(autoplay_session_id))
                 if session_row["stop_on_loss_amount"] is not None:
                     await _check_autoplay_loss_limit(
@@ -462,6 +465,23 @@ async def _place_ticket(
                 exposure_check.projected_exposure,
                 round_id,
             )
+            if autoplay_session_id is not None:
+                # Counted, and the session exhausted when this was its last
+                # round, in the ticket's own transaction. They used to be
+                # written after it committed, so a process killed in between
+                # left the session active with a stale count, and the next
+                # round charged the player for a round they never bought
+                # (platform audit, 2026-09-30).
+                await conn.execute(
+                    "UPDATE keno_autoplay_sessions SET rounds_placed = rounds_placed + 1, last_round_id = $2, "
+                    "status = CASE WHEN rounds_total IS NOT NULL AND rounds_placed + 1 >= rounds_total "
+                    "THEN 'exhausted' ELSE status END, "
+                    "stop_reason = CASE WHEN rounds_total IS NOT NULL AND rounds_placed + 1 >= rounds_total "
+                    "THEN 'rounds_exhausted' ELSE stop_reason END, "
+                    "updated_at = now() WHERE id = $1",
+                    autoplay_session_id,
+                    round_id,
+                )
 
             logger.info(
                 "keno_ticket_placed",

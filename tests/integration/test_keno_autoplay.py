@@ -16,7 +16,7 @@ from decimal import Decimal
 import asyncpg
 import pytest
 
-from packages.core import keno, keno_autoplay, ledger
+from packages.core import keno, keno_autoplay, keno_tickets, ledger
 from tests.integration.conftest import create_funded_user
 
 pytestmark = pytest.mark.asyncio
@@ -228,6 +228,32 @@ async def test_place_for_active_sessions_marks_exhausted_once_rounds_total_is_re
     await keno_autoplay.place_for_active_sessions(pool, redis=object(), round_id=round_3)
     count = await pool.fetchval("SELECT count(*) FROM keno_tickets WHERE round_id = $1", round_3)
     assert count == 0
+
+
+async def test_a_crash_right_after_an_autoplay_ticket_commits_does_not_buy_an_extra_round(
+    pool: asyncpg.Pool, conn: asyncpg.Connection
+) -> None:
+    """Platform audit #40: the ticket and the session's rounds_placed (and
+    its exhaustion) were written in separate transactions. A process killed
+    between them left a one-round session active with rounds_placed 0, and
+    the next round charged the player for a round they never bought."""
+    user_id = await create_funded_user(conn, Decimal("1000.00"))
+    session = await keno_autoplay.start_session(pool, user_id=user_id, picks=[1], stake=Decimal("10"), rounds_total=1)
+
+    round_1 = await _seed_keno_round(conn)
+    # What _place_for_session does first; the process dies before anything after it.
+    await keno_tickets.place_ticket(
+        pool, redis=object(), user_id=user_id, picks=[1], stake=Decimal("10"),
+        idempotency_key=f"autoplay:{session.id}:{round_1}", autoplay_session_id=session.id,
+    )
+
+    round_2 = await _seed_keno_round(conn)
+    await keno_autoplay.place_for_active_sessions(pool, redis=object(), round_id=round_2)
+
+    tickets = await pool.fetchval("SELECT count(*) FROM keno_tickets WHERE autoplay_session_id = $1", session.id)
+    assert tickets == 1
+    row = await pool.fetchrow("SELECT status, rounds_placed FROM keno_autoplay_sessions WHERE id = $1", session.id)
+    assert (row["status"], row["rounds_placed"]) == ("exhausted", 1)
 
 
 async def test_place_for_active_sessions_stops_on_a_real_rejection_not_just_logs_it(
