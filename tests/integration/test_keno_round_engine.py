@@ -943,3 +943,47 @@ async def test_an_overlapping_second_settlement_pass_does_not_rewrite_a_paid_jac
         recorded = await conn.fetchval("SELECT jackpot_payout FROM keno_tickets WHERE id = $1", ticket_id)
     assert paid is not None and paid >= Decimal("500.00")
     assert recorded == paid
+
+
+@pytest.mark.xfail(strict=True, reason="rule for several jackpot winners in one round: operator decision pending (#57)")
+async def test_two_jackpot_winners_in_one_round_both_get_a_share(pool, redis):
+    """Platform audit #57: two 5-spot tickets that both hit 5/5 in one
+    round. The first one in the (unordered) fetch took the whole pool and
+    the other got nothing, so row order, not any stated rule, decided who
+    won. The recommended rule, an equal split with the leftover cent kept
+    in the pool, is the operator's to confirm."""
+    async with pool.acquire() as conn:
+        await _seed_fast_config_and_tier(conn)
+        config_id = await conn.fetchval("SELECT id FROM keno_configs ORDER BY id DESC LIMIT 1")
+        tier_id = await conn.fetchval("SELECT id FROM keno_risk_tiers ORDER BY id DESC LIMIT 1")
+        paytable_id = await conn.fetchval("SELECT id FROM keno_paytables ORDER BY id DESC LIMIT 1")
+        drawn = list(range(1, 21))
+        round_id = await conn.fetchval(
+            "INSERT INTO keno_rounds (seq, status, config_id, tier_id, server_seed, server_seed_hash, drawn_numbers) "
+            "VALUES ((SELECT COALESCE(MAX(seq), 0) + 1 FROM keno_rounds), 'settling', $1, $2, $3, 'h', $4) "
+            "RETURNING id",
+            config_id, tier_id, b"seed", drawn,
+        )
+        ticket_ids = []
+        for _ in range(2):
+            user_id = await create_funded_user(conn, Decimal("0"))
+            ticket_id = await conn.fetchval(
+                "INSERT INTO keno_tickets (round_id, user_id, paytable_id, pick_count, stake, status, idempotency_key) "
+                "VALUES ($1, $2, $3, 5, 10, 'pending', $4) RETURNING id",
+                round_id, user_id, paytable_id, f"test-two-jackpots-{uuid.uuid4()}",
+            )
+            await conn.executemany(
+                "INSERT INTO keno_ticket_selections (ticket_id, number) VALUES ($1, $2)",
+                [(ticket_id, n) for n in (1, 2, 3, 4, 5)],
+            )
+            ticket_ids.append(ticket_id)
+    await _top_up_jackpot(pool, Decimal("1000.00"))
+
+    await KenoRoundEngine(pool, redis)._settle_tickets(round_id, drawn)
+
+    async with pool.acquire() as conn:
+        shares = [
+            await conn.fetchval("SELECT COALESCE(jackpot_payout, 0) FROM keno_tickets WHERE id = $1", t)
+            for t in ticket_ids
+        ]
+    assert all(share > 0 for share in shares), shares
