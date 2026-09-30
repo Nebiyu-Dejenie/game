@@ -349,3 +349,65 @@ async def test_circuit_breaker_at_floor_tier_cannot_demote_further_but_does_not_
     # own comment on why a floor-tier trip still increments it.
     trips_after = metrics.keno_tier_changes_total.labels(trigger="circuit_breaker")._value.get()
     assert trips_after == trips_before + 1
+
+
+async def test_circuit_breaker_demotes_one_tier_per_trip_not_one_per_round(pool, conn):
+    """Platform audit #50: the breaker kept no memory of having tripped. It
+    runs at every round's creation (about every 45 s), and the trailing-24h
+    window that tripped it stays hot for up to a day, so each later round
+    demoted again: Tier 3 to Tier 1 in two rounds from one hot window.
+    Spec 7.3 says "demote a tier"."""
+    tier1, tier2 = await _make_two_tiers(pool, conn, tier1_min=Decimal("0"), tier2_min=Decimal("1000"))
+    admin_id, *_ = await create_test_admin(pool, role="superadmin")
+    tier3 = await keno_queries.create_tier_admin(
+        pool, admin_id=admin_id, tier_number=3, min_reserve=Decimal("2000"), max_pick_count=6,
+        max_top_multiplier=_UNCONSTRAINING_TOP_MULTIPLIER, stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
+        max_win_per_ticket=Decimal("3000"), max_round_exposure_pct=Decimal("0.10"),
+        paytable_profile="low_variance", reason="test tier 3",
+    )
+    await conn.execute("UPDATE keno_tier_state SET current_tier_id = $1 WHERE id = 1", tier3["id"])
+    config = await keno_queries.create_config_admin(
+        pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
+        result_seconds=8, min_picks=1, max_picks=6, max_tickets_per_user_per_round=3,
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
+        reason="circuit breaker one-tier-per-trip test",
+    )
+    paytable = await conn.fetchrow(
+        "SELECT id FROM keno_paytables WHERE pick_count = 1 AND profile = 'low_variance' "
+        "ORDER BY effective_from DESC LIMIT 1"
+    )
+    user_id = await create_funded_user(conn, Decimal("1000"))
+    round_id = await conn.fetchval(
+        "INSERT INTO keno_rounds (seq, status, config_id, tier_id, server_seed_hash, betting_opened_at) "
+        "VALUES ((SELECT COALESCE(MAX(seq), 0) + 1 FROM keno_rounds), 'betting_open', $1, $2, $3, now()) "
+        "RETURNING id",
+        config["id"], tier3["id"], keno.server_seed_hash(keno.generate_server_seed()),
+    )
+    await conn.execute(
+        "INSERT INTO keno_tickets (round_id, user_id, paytable_id, pick_count, stake, "
+        "expected_payout_contribution, status, idempotency_key) "
+        "VALUES ($1, $2, $3, 1, 10, 10, 'pending', $4)",
+        round_id, user_id, paytable["id"], f"test-cb-once-ticket-{uuid.uuid4()}",
+    )
+    baseline_expected = await conn.fetchval(
+        "SELECT COALESCE(SUM(kt.expected_payout_contribution), 0) FROM keno_tickets kt "
+        "JOIN keno_rounds kr ON kr.id = kt.round_id WHERE kr.betting_opened_at >= now() - interval '24 hours'"
+    )
+    payout_amount = (Decimal(baseline_expected) + Decimal("10")) * Decimal("3.0") + Decimal("1000")
+    await _fund_reserve(conn, payout_amount * 2)
+    reserve = await ledger.get_or_create_account(conn, None, "keno_reserve")
+    cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
+    await ledger.post(
+        conn, "keno_payout",
+        [ledger.Entry(reserve.id, -payout_amount), ledger.Entry(cash.id, payout_amount)],
+        idempotency_key=f"test-cb-once-payout-{uuid.uuid4()}", created_by="test",
+    )
+
+    first = await keno_tier_automation.check_circuit_breaker(pool)
+    assert (first.changed, first.from_tier_number, first.to_tier_number) == (True, 3, 2)
+
+    # The next round's creation: the same hot window, nothing new paid out.
+    second = await keno_tier_automation.check_circuit_breaker(pool)
+    state = await conn.fetchrow("SELECT current_tier_id FROM keno_tier_state WHERE id = 1")
+    assert second.changed is False
+    assert state["current_tier_id"] == tier2["id"]

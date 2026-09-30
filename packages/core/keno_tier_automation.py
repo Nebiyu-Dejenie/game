@@ -218,23 +218,34 @@ async def check_circuit_breaker(pool: asyncpg.Pool) -> TierChangeResult:
             if config is None:
                 return TierChangeResult(changed=False)
 
+            # The window starts 24 h ago, or at the breaker's last trip if
+            # that's later: each demotion needs fresh evidence. This runs at
+            # every round's creation, and the window that tripped it stays
+            # hot for up to a day, so without this it demoted again every
+            # round, Tier 3 to Tier 1 in two rounds, where spec 7.3 says
+            # "demote a tier" (platform audit, 2026-09-30).
+            last_trip = await conn.fetchval(
+                "SELECT max(created_at) FROM keno_tier_changes WHERE trigger = 'circuit_breaker'"
+            )
             actual_payout = await conn.fetchval(
                 """
                 SELECT COALESCE(SUM(le.amount), 0)
                 FROM ledger_entries le
                 JOIN ledger_transactions lt ON lt.id = le.transaction_id
                 WHERE lt.kind IN ('keno_payout', 'keno_jackpot_payout')
-                  AND lt.created_at >= now() - interval '24 hours'
+                  AND lt.created_at >= GREATEST(now() - interval '24 hours', COALESCE($1::timestamptz, '-infinity'))
                   AND le.amount > 0
-                """
+                """,
+                last_trip,
             )
             expected_payout = await conn.fetchval(
                 """
                 SELECT COALESCE(SUM(kt.expected_payout_contribution), 0)
                 FROM keno_tickets kt
                 JOIN keno_rounds kr ON kr.id = kt.round_id
-                WHERE kr.betting_opened_at >= now() - interval '24 hours'
-                """
+                WHERE kr.betting_opened_at >= GREATEST(now() - interval '24 hours', COALESCE($1::timestamptz, '-infinity'))
+                """,
+                last_trip,
             )
             if expected_payout is None or Decimal(expected_payout) <= 0:
                 return TierChangeResult(changed=False)
