@@ -5,6 +5,7 @@ scenario, idempotent re-bet, betting-after-close rejection, insufficient
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import random
@@ -255,6 +256,32 @@ async def test_place_ticket_is_idempotent_on_retry(pool: asyncpg.Pool) -> None:
 
     balance = await ledger.user_balance_snapshot(pool, user_id)
     # Only ever debited once, despite two calls with the same key.
+    assert Decimal(balance["cash"]) == Decimal("980.00")
+
+
+async def test_concurrent_retries_with_one_key_all_get_the_one_ticket(pool: asyncpg.Pool) -> None:
+    """Platform audit #43(b): a retry sent while the first request was
+    still in flight could pass the unlocked replay check too, and then hit
+    the keno_tickets unique index as a raw 500 for a ticket that was placed
+    and charged. The check is repeated under the player's lock."""
+    async with pool.acquire() as conn:
+        await _seed_keno_round(conn)
+        await _fund_reserve(conn, Decimal("40000"))
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+
+    idempotency_key = f"test-{uuid.uuid4()}"
+    tickets = await asyncio.gather(
+        *(
+            keno_tickets.place_ticket(
+                pool, redis=object(), user_id=user_id, picks=[7, 8], stake=Decimal("20"),
+                idempotency_key=idempotency_key,
+            )
+            for _ in range(5)
+        )
+    )
+
+    assert len({t.id for t in tickets}) == 1
+    balance = await ledger.user_balance_snapshot(pool, user_id)
     assert Decimal(balance["cash"]) == Decimal("980.00")
 
 
