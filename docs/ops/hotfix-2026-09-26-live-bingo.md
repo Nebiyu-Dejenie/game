@@ -202,6 +202,10 @@ is unaffected (`/healthz` 200, still `a7603c5`).
   is needed before the Stage 1 reserve funding;
 - the 13 fixed high findings in `docs/audit/platform-audit-2026-09.md`
   (#15, #16, #19, #22 to #24, #26 to #31, #34, #35);
+- four fixed medium findings on Keno: #56 (a ticket is claimed before
+  it's paid, and only the claiming pass pays its jackpot), #40 (autoplay
+  counts a round in the ticket's own transaction), #50 (the circuit
+  breaker demotes one tier per trip), #64 (hot-cold lookback bounded);
 - `fc4fd3b`, `d5c5703`: monitoring config (profile-gated, doesn't start).
 
 Verified before deploying: mypy clean; full suite 1,857 passed; the only
@@ -279,6 +283,10 @@ g payments      services/payments/withdrawals.py     'greatest(6, length(n::text
 g admin         services/admin/keno_queries.py       '_RESERVE_TRANSFER_LOCK_KEY = '
 g bot           services/bot/notification_relay.py   'DEAD_LETTER_STREAM = '
 g admin         web/admin/js/screens/keno/overview.js 'request_id: transferRequestId'
+g keno-worker   services/engine/keno_round_engine.py 'if is_jackpot and settled:'
+g keno-worker   packages/core/keno_tier_automation.py 'last_trip = await conn.fetchval'
+g gateway       packages/core/keno_tickets.py        'rounds_placed = rounds_placed + 1'
+g gateway       services/gateway/app.py              'Query(default=50, ge=1, le=200)'
 echo "healthz: $(curl -s -o /dev/null -w '%{http_code}' https://arada.click/healthz)"
 $C ps --format '{{.Service}} {{.Status}}' </dev/null | grep -E "$(echo $APPS | tr ' ' '|')"
 for s in $APPS; do printf '%-26s errors in last 40s: %s\n' "$s" "$($C logs --since 40s $s </dev/null 2>&1 | grep -ciE 'traceback|exception|"level": "error"' || true)"; done
