@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 ADMIN_WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web" / "admin"
 
-from packages.core import platform_settings
+from packages.core import ledger, platform_settings
 from packages.core.config import get_settings
 from packages.core.db_pool import create_pool
 from packages.core.redis_conn import get_redis
@@ -133,6 +133,14 @@ async def _unauthenticated_route_ip_allowlist(
 # that would otherwise clear the floor.
 _LOW_INFORMATION_REASONS = frozenset({"done", "test", "fix", "ok", "n/a", "na", "asdf", "temp", "-", "."})
 _MIN_REASON_LENGTH = 10
+
+
+def _require_whole_cents(amount: Decimal, field: str) -> None:
+    """An admin-entered money amount must be a whole number of cents.
+    ledger.post() refuses anything else (platform audit #77, 2026-10-01),
+    so this turns a fraction of a cent into a clear 422, not a 500."""
+    if not ledger.is_whole_cents(amount):
+        raise HTTPException(status_code=422, detail=f"{field} must be a whole number of cents")
 
 
 def _require_reason(reason: str) -> None:
@@ -344,6 +352,7 @@ async def adjust_balance(
         amount = Decimal(body.amount)
     except InvalidOperation as exc:
         raise HTTPException(status_code=422, detail="amount must be a decimal number") from exc
+    _require_whole_cents(amount, "amount")
 
     try:
         txn_id = await queries.adjust_balance(
@@ -767,6 +776,7 @@ async def create_room(
         stake = Decimal(body.stake)
     except InvalidOperation as exc:
         raise HTTPException(status_code=422, detail="stake must be a decimal number") from exc
+    _require_whole_cents(stake, "stake")
     try:
         room_id = await queries.create_room_admin(
             app.state.pool,
@@ -1436,6 +1446,7 @@ async def grant_manual_bonus(
     _require_reason(body.reason)
     if not body.amount.is_finite() or body.amount <= 0:
         raise HTTPException(status_code=422, detail="amount must be positive")
+    _require_whole_cents(body.amount, "amount")
     if not body.request_id.strip():
         raise HTTPException(status_code=422, detail="request_id is required")
     bonus_id = await bonus_queries.grant_manual_bonus_admin(
@@ -1630,6 +1641,7 @@ async def keno_reserve_deposit(
         amount = Decimal(body.amount)
     except InvalidOperation:
         raise HTTPException(status_code=422, detail="invalid_amount") from None
+    _require_whole_cents(amount, "amount")
     try:
         return await keno_queries.deposit_to_reserve_admin(
             app.state.pool, admin_id=admin.admin_id, amount=amount, reason=body.reason,
@@ -1656,6 +1668,7 @@ async def keno_reserve_withdraw(
         amount = Decimal(body.amount)
     except InvalidOperation:
         raise HTTPException(status_code=422, detail="invalid_amount") from None
+    _require_whole_cents(amount, "amount")
     try:
         return await keno_queries.withdraw_from_reserve_admin(
             app.state.pool, admin_id=admin.admin_id, amount=amount, reason=body.reason,

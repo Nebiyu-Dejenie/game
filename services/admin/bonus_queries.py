@@ -15,6 +15,7 @@ from typing import Any
 
 import asyncpg
 
+from packages.core import ledger
 from packages.core.bonuses import BonusNotFound, grant_bonus, revoke_bonus
 from services.admin import audit
 
@@ -37,6 +38,8 @@ def _validate_reward_shape(reward_type: str, reward_amount: Decimal | None, rewa
         raise InvalidBonusRule("reward_amount is required for a flat reward")
     if reward_type == "percentage" and reward_percentage is None:
         raise InvalidBonusRule("reward_percentage is required for a percentage reward")
+    if reward_amount is not None and not ledger.is_whole_cents(reward_amount):
+        raise InvalidBonusRule("reward_amount must be a whole number of cents")
 
 
 async def create_bonus_rule_admin(
