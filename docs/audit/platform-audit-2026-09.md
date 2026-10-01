@@ -44,7 +44,7 @@ the status column as items are verified or fixed.
 | 33 | high | `services/payments/telebirr_redemption.py:152` | Telebirr redemption trusts only knowledge of the reference; whoever submits it first gets another player's deposit | Confirmed; in the Telebirr design |
 | 34 | high | `services/payments/withdrawals.py:180` | Seven-digit reference numbers truncate to six digits, so consecutive payment refs collide once payment_ref_seq reaches 1,000,000 | Fixed (797fe74), deployed 2026-10-01 |
 | 35 | high | `services/payments/withdrawals.py:361` | sweep_stuck_approved_payouts re-enqueues payouts that are only waiting in the queue, not lost, and adds a new duplicate every tick | Fixed (c1e3077), deployed 2026-10-01 |
-| 36 | medium | `packages/core/bonuses.py:90` | Concurrent welcome-bonus grants create two bonuses rows backed by one ledger credit, which poisons the bonus sweep for all players | Not yet verified |
+| 36 | medium | `packages/core/bonuses.py:90` | Concurrent welcome-bonus grants create two bonuses rows backed by one ledger credit, which poisons the bonus sweep for all players | Fixed (fc82a5f), deploy pending |
 | 37 | medium | `packages/core/keno_autoplay.py:210` | Autoplay places a ticket after the player pressed Stop: stale session snapshot and no status re-check in the placement transaction | Already fixed (verified): place_ticket re-checks the session under a row lock |
 | 38 | medium | `packages/core/keno_autoplay.py:221` | stop_on_loss / stop_on_win routinely overshoot by one round because round N+1's autoplay tickets are placed before round N's result is recorded | Fixed (939a29b, same as #17), deployed 2026-10-01 |
 | 39 | medium | `packages/core/keno_autoplay.py:231` | A round filled to capacity by other players' bets permanently stops everyone else's autoplay sessions | Confirmed; skipping vs stopping on a round-level rejection is the operator's decision |
@@ -75,7 +75,7 @@ the status column as items are verified or fixed.
 | 64 | medium | `services/gateway/app.py:657` | hot-cold endpoint's lookback_rounds is not clamped; one request can load all Keno history and block the gateway event loop | Fixed (f732569), deployed 2026-10-01 |
 | 65 | medium | `services/gateway/fanout.py:80` | When a ConnectionQueue overflows with a non-droppable message, queued round_end/balance_update messages are discarded without triggering a resync | Not yet verified |
 | 66 | medium | `services/payments/app.py:283` | payout_queue_depth uses XLEN on a stream that is never trimmed, so the depth alert is always on and cannot reveal a stalled consumer | Not yet verified |
-| 67 | medium | `services/payments/bonus_sweep.py:32` | The bonus sweep has no per-item isolation: one failing bonus, or a Redis publish error, aborts the rest of the tick for every other player | Not yet verified |
+| 67 | medium | `services/payments/bonus_sweep.py:32` | The bonus sweep has no per-item isolation: one failing bonus, or a Redis publish error, aborts the rest of the tick for every other player | Fixed (fc82a5f), deploy pending |
 | 68 | medium | `services/payments/bonus_sweep.py:34` | The same wagering counts in full toward every active bonus a user holds at once | Not yet verified |
 | 69 | medium | `services/payments/deposits.py:151` | The daily deposit cap is check-then-act with no per-user lock; concurrent intents or redemptions exceed it | Fixed (a31824d), deploy pending |
 | 70 | medium | `services/payments/deposits.py:278` | The deposit webhook handler looks up the payment by our_ref without filtering on direction, so it can change a withdrawal's status | Fixed (b07aedd), deployed 2026-10-01 |
@@ -448,7 +448,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** medium
 - **Where** `packages/core/bonuses.py:90`
-- **Status** Not yet verified
+- **Status** Fixed (fc82a5f), deploy pending
 - **Trigger** Two deposit confirmations for one user overlap. Examples: approve_manual_deposit_admin (queries.py 2231) runs while the same user's Telebirr redemption or Chapa confirmation commits; or two admins approve two of that user's manual deposits. Both maybe_grant_welcome_bonus calls count grants_so_far=0 and use the same key welcome-{u}-{rule}-0. In T2, grant_bonus's pre-check SELECT runs before T1 commits. ledger.post then blocks on the unique key and returns T1's transaction as a replay. T2 then INSERTs a second bonuses row with the same grant_txn_id, since bonuses has no unique index on grant_txn_id. The referral path is saved by ux_bonuses_referral_once; welcome is not.
 - **Impact** Two 'active' bonuses exist but user_bonus holds one amount. Both clear wagering on the same tick. The second convert_bonus_to_cash raises InsufficientFunds, or, if the user holds another bonus, drains it. sweep_bonus_wagering has no per-row try/except, so every tick aborts at that row, and every active bonus after it in scan order, belonging to other players, never converts or expires.
 - **Suggested fix** Add UNIQUE(bonuses.grant_txn_id) (migration) and INSERT ... ON CONFLICT (grant_txn_id) DO NOTHING RETURNING, falling back to the existing row. Alternatively, take pg_advisory_xact_lock(user_id) at the top of maybe_grant_*. Separately, isolate each row in sweep_bonus_wagering.
@@ -727,7 +727,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/bonus_sweep.py:32`
-- **Status** Not yet verified
+- **Status** Fixed (fc82a5f), deploy pending
 - **Trigger** Inside the for-loop, any exception from wagering_progress_for_user_since, the progress UPDATE, convert_bonus_to_cash/expire_bonus (BonusNotFound, InsufficientFunds, a DB error or deadlock abort) or publish_balance_update propagates straight out. A concrete case: redis.publish raises during a Redis blip after a conversion has already committed. _run_periodic_sweep (payout_worker.py:434-446) only catches at the tick level, and the candidate query has no ORDER BY.
 - **Impact** Every bonus after the failing row is skipped for that tick. During a sustained Redis outage each tick commits at most one conversion or expiry and then aborts, so all players' conversions and expiries trickle through at one per minute. If a row ever fails the same way every time (e.g. a bonuses row whose amount exceeds user_bonus, which the schema does not prevent because grant_txn_id has no UNIQUE), the sweep never gets past it. Every player behind that row is stuck, with only a log line to show for it.
 - **Suggested fix** Wrap each row's processing in try/except Exception that logs the bonus_id and continues. Make the post-commit publish best-effort (its own try/except). Add ORDER BY id and a metric for per-row failures.
