@@ -395,3 +395,28 @@ docker compose -f deploy/docker-compose.prod.yml up -d --no-deps gateway admin p
 git checkout --detach a7603c5
 ```
 The server's checkout is detached at `2aa504a`.
+
+## Record: Stage 1 reserve funding, 2026-10-01 08:12 UTC
+
+The operator confirmed it ("confirm Step 2") after seeing the exact
+transaction, the resulting balances, the per-round ceiling and that the tier
+stays at 1.
+
+- **Read first** (the three read-only statements shown to the operator):
+  house_float −1,000.00, keno_reserve 0, Tier 1 at 10%, one superadmin
+  (id 1). This matched the preview.
+- **Posted** with the funding script above, in the admin container under
+  admin id 1: `{'balance': '30000.00', 'replayed': False}`, house_float
+  −31,000.00.
+- **Verified:**
+  - Ledger transaction #4, `keno_reserve_deposit`, key
+    `admin-reserve-deposit-1-stage1-reserve-funding-2026-09`, created by
+    `admin:1` at 08:12:51 UTC. Entries: house_float −30,000.00,
+    keno_reserve +30,000.00.
+  - Exactly one `keno_reserve_deposit` exists.
+  - Audit row #7: `keno.reserve.deposit`, balance 0.00 → 30,000.00, with
+    the reason.
+  - Reconcile `ledger_reconciliation_ok`.
+  - After the next Keno round opened: Tier 1, `max_round_exposure_pct`
+    0.10, no promotion candidate. Per-round ceiling 3,000.00. Keno still
+    off, allowlist on, no keno-worker errors.

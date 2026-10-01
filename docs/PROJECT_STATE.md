@@ -72,14 +72,14 @@ Rules for editing it:
 | Brand / domain | Zemen Game at `arada.click` (Mini App, bot, admin, finance, agent portal, SMS) | [PRODUCTION_DOMAIN_AND_CLOUDFLARE.md](PRODUCTION_DOMAIN_AND_CLOUDFLARE.md), README |
 | Production commit | `2aa504a`, alembic `b5d9e3a1c7f2`, deployed 2026-10-01 07:38 UTC; rollback image `jobingo:rollback-a7603c5` | [ops/hotfix-2026-09-26-live-bingo.md](ops/hotfix-2026-09-26-live-bingo.md) "Deploy record: Step 4" |
 | Bingo | **Live with real money** | same |
-| Keno | **Deployed but off** (`keno_enabled = false`), beta allowlist on, Tier 1, reserve 0 | same; read 2026-10-01 |
+| Keno | **Deployed but off** (`keno_enabled = false`), beta allowlist on, Tier 1. **Reserve 30,000.00** (funded 2026-10-01 08:12 UTC), so the per-round ceiling is 3,000.00 | runbook "Stage 1 reserve funding" |
 | Telebirr SMS deposits | **Still enabled** (`payment_provider_availability`: `true` since 2026-09-22, read 2026-10-01). The operator meant to switch them off on 2026-09-29 because of the forged-SMS hole (audit #9). See D0. | deploy pre-flight 2026-10-01 |
 | Monitoring | **No Prometheus or Alertmanager in production.** No alert has ever fired there. Config is ready but not started (profile `monitoring`). | `deploy/docker-compose.prod.yml` |
 | Step 1 release | **Deployed 2026-10-01 07:38 UTC** (`2aa504a`); every post-deploy check passed, and there were no errors or restarts after 6 minutes | runbook "Deploy record: Step 4" |
 | Git | `origin` = `github.com/Nebiyu-Dejenie/game`, in sync with local `main` (pushed 2026-10-01). The server's checkout still points at the dead `igame` remote, so deploys travel as a git bundle. The repo has no self-hosted runner, so CD can't deploy. | `gh api .../actions/runners` |
 | CI | Unbroken on 2026-10-01 (it had failed on every run since 2026-09-26, waiting for a container name that no longer exists). mypy, the full suite and the image build now pass on GitHub. | `.github/workflows/ci.yml` |
 | Audit | 115 findings. Every critical and high one is verified; see [Known Bugs](#known-bugs) | [audit/platform-audit-2026-09.md](audit/platform-audit-2026-09.md) |
-| Ledger oddity | `house_float` read −1,000.00 on 2026-09-29, from ledger transaction #1; still an open question | [Open Questions](#open-questions) |
+| Ledger oddity | `house_float` reads −31,000.00 after the reserve funding; the −1,000.00 it had before came from ledger transaction #1, still an open question | [Open Questions](#open-questions) |
 
 ---
 
@@ -118,8 +118,8 @@ The operator's four steps. Status as of the header date.
 | Step | What | Status |
 |---|---|---|
 | 1 | Ship the Keno fixes and every verified audit fix, then deploy | **Done 2026-10-01** (`2aa504a`) |
-| 2 | Fund the prize reserve: 30,000.00 ETB, `house_float` → `keno_reserve` (`keno_reserve_deposit`) | **Next.** The double-post fix is live. Show the operator the exact transaction and the resulting per-round ceiling (3,000 at Tier 1). **Operator confirms before posting.** |
-| 3 | Add internal testers to the beta allowlist | Needs each tester's Telegram username or id; they must have opened the bot once |
+| 2 | Fund the prize reserve: 30,000.00 ETB, `house_float` → `keno_reserve` (`keno_reserve_deposit`) | **Done 2026-10-01 08:12 UTC**, after the operator confirmed. Ledger transaction #4, audit row #7; reserve 30,000.00, house_float −31,000.00, Tier 1, ceiling 3,000.00, reconcile OK |
+| 3 | Add internal testers to the beta allowlist | **Next.** Needs each tester's Telegram username or numeric id; they must have opened the bot once. Added with the audited allowlist function under admin id 1 |
 | 4 | Flip `keno_enabled` | **The operator does this themselves** |
 
 What limits Keno at a 30,000 reserve (Tier 1, `max_round_exposure_pct` 10%, so
@@ -832,6 +832,7 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
+- **2026-10-01 (later still):** Keno Stage 1 reserve funded: 30,000.00 from house_float, after the operator confirmed the exact transaction. Verified (ledger transaction #4, audit row #7, reconcile OK, Tier 1, ceiling 3,000.00). Step 3 (testers) is next.
 - **2026-10-01 (later):** **Deployed the Step 1 release** (`2aa504a`, 07:38 UTC) through the runbook script. Every check passed; no errors or restarts after 6 minutes.
   - The pre-flight found Telebirr SMS deposits still enabled (new D0).
   - Also shipped: the payment fixes #70/#71, #78 and #79.
