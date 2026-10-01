@@ -77,11 +77,11 @@ the status column as items are verified or fixed.
 | 66 | medium | `services/payments/app.py:283` | payout_queue_depth uses XLEN on a stream that is never trimmed, so the depth alert is always on and cannot reveal a stalled consumer | Not yet verified |
 | 67 | medium | `services/payments/bonus_sweep.py:32` | The bonus sweep has no per-item isolation: one failing bonus, or a Redis publish error, aborts the rest of the tick for every other player | Not yet verified |
 | 68 | medium | `services/payments/bonus_sweep.py:34` | The same wagering counts in full toward every active bonus a user holds at once | Not yet verified |
-| 69 | medium | `services/payments/deposits.py:151` | The daily deposit cap is check-then-act with no per-user lock; concurrent intents or redemptions exceed it | Not yet verified |
+| 69 | medium | `services/payments/deposits.py:151` | The daily deposit cap is check-then-act with no per-user lock; concurrent intents or redemptions exceed it | Fixed (a31824d), deploy pending |
 | 70 | medium | `services/payments/deposits.py:278` | The deposit webhook handler looks up the payment by our_ref without filtering on direction, so it can change a withdrawal's status | Fixed (b07aedd), deployed 2026-10-01 |
 | 71 | medium | `services/payments/deposits.py:278` | _apply_confirmed_status never checks direction='in' or the provider on the payments row it locks | Fixed (b07aedd), deployed 2026-10-01 |
 | 72 | medium | `services/payments/deposits.py:567` | run_provider_reconciliation aborts the whole report on one failing fetch_status | Not yet verified |
-| 73 | medium | `services/payments/manual.py:79` | The manual (and automatic) daily deposit cap is checked and then inserted without a lock, so parallel requests exceed it | Not yet verified |
+| 73 | medium | `services/payments/manual.py:79` | The manual (and automatic) daily deposit cap is checked and then inserted without a lock, so parallel requests exceed it | Fixed (a31824d), deploy pending |
 | 74 | medium | `services/payments/payout_worker.py:403` | The payout loop retries a failing entry with no backoff, and that entry blocks every new payout | Not yet verified |
 | 75 | medium | `services/payments/telebirr_ingest.py:186` | evidence_hash is computed over the raw bytes, so a re-delivery of the same SMS with only formatting differences flips live evidence to 'disputed' | Not yet verified |
 | 76 | medium | `services/payments/telebirr_redemption.py:196` | Redeeming a 'rejected' evidence row hits an AssertionError instead of returning a code | Not yet verified |
@@ -745,7 +745,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/deposits.py:151`
-- **Status** Not yet verified
+- **Status** Fixed (a31824d), deploy pending
 - **Trigger** Chapa: create_deposit_intent runs _check_deposit_eligibility on a bare pooled connection with no transaction (line 184), then INSERTs the pending row. Five concurrent taps pass the 5-token DEPOSIT bucket, all compute today_total before any of the INSERTs are visible, and all pass. Telebirr: redeem_evidence runs the same check after locking only its own evidence row, and before the ledger.post that serializes on provider_settlement. Two redemptions of different references by the same user, sent at the same moment (for example two bot pastes, since aiogram handles updates concurrently, or bot plus Mini App), both pass. The payments INSERT and credit then go through without the cap being checked again.
 - **Impact** A player's own responsible-gaming daily deposit cap, or the platform's daily_deposit_cap_etb, is bypassed by several times the remaining headroom. The overshoot is bounded by the rate-limit buckets and, for Telebirr, by how many real payments the player has.
 - **Suggested fix** Serialize the cap check per user. Take pg_advisory_xact_lock(<deposit-cap namespace>, user_id) as the first statement, and in create_deposit_intent run the check and the INSERT in one transaction. In redeem_evidence, take the same advisory lock before the SUM.
@@ -781,7 +781,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/manual.py:79`
-- **Status** Not yet verified
+- **Status** Fixed (a31824d), deploy pending
 - **Trigger** _check_deposit_eligibility (deposits.py:147-157) sums today's deposits without locking the user row or taking an advisory lock. Several /deposit manual submissions fired in parallel by the same player, up to the 5 per hour Redis rate limit, each read today_total before the others' INSERTs commit, so all pass the check and all insert. create_deposit_intent has the same race, and there it is not even inside a transaction.
 - **Impact** A player can go past the platform daily cap, or their own responsible-gaming deposit limit, by up to 5 times per hour. Admins then approve deposits that should never have been accepted.
 - **Suggested fix** At the start of the transaction in _check_deposit_eligibility, take SELECT ... FROM users WHERE id=$1 FOR NO KEY UPDATE (or pg_advisory_xact_lock on the user_id), and wrap create_deposit_intent's check and insert in a transaction too.
