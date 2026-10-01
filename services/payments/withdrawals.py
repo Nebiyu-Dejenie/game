@@ -149,11 +149,19 @@ async def request_withdrawal(
                         f"user {user_id} has kyc_level {user['kyc_level']}, needs >= 2 for amount {amount}"
                     )
 
+                # The window starts when the deposit was credited: its ledger
+                # transaction, which every rail records on the row. The row's
+                # created_at is when a Chapa checkout was opened or a manual
+                # deposit submitted, so opening a checkout, waiting out the
+                # window and then paying used to let fresh, still-reversible
+                # money straight out (platform audit, 2026-10-01). A row with
+                # no ledger transaction falls back to its updated_at.
                 recent_deposit = await conn.fetchval(
                     """
-                    SELECT 1 FROM payments
-                    WHERE user_id = $1 AND direction = 'in' AND status = 'succeeded'
-                      AND created_at > now() - make_interval(mins => $2)
+                    SELECT 1 FROM payments p
+                    LEFT JOIN ledger_transactions lt ON lt.id = p.ledger_txn_id
+                    WHERE p.user_id = $1 AND p.direction = 'in' AND p.status = 'succeeded'
+                      AND COALESCE(lt.created_at, p.updated_at) > now() - make_interval(mins => $2)
                     LIMIT 1
                     """,
                     user_id,

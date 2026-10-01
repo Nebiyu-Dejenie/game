@@ -148,6 +148,31 @@ async def test_admin_kyc_promotion_unblocks_a_previously_rejected_withdrawal(poo
     assert intent.our_ref.startswith("WD-")
 
 
+async def test_a_deposit_credited_just_now_blocks_withdrawal_however_old_its_checkout(pool, redis, conn):
+    """Platform audit #79: the chargeback window was measured from the
+    payment row's created_at, which for Chapa is when the checkout was
+    opened and for a manual deposit when it was submitted. A player who
+    opened a checkout, waited past the window, paid, and withdrew at once
+    got freshly credited, still-reversible money straight out. The window
+    now starts at the credit itself."""
+    user_id = await create_funded_user(conn, Decimal("1000.00"))
+    provider_settlement = await ledger.get_or_create_account(conn, None, "provider_settlement")
+    cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
+    our_ref = f"DEP-test-late-pay-{user_id}"
+    credit = await ledger.post(
+        conn, "deposit",
+        [ledger.Entry(provider_settlement.id, Decimal("-200.00")), ledger.Entry(cash.id, Decimal("200.00"))],
+        idempotency_key=our_ref, created_by="test",
+    )
+    await conn.execute(
+        "INSERT INTO payments (user_id, direction, provider, our_ref, amount, status, ledger_txn_id, created_at) "
+        "VALUES ($1, 'in', 'chapa', $2, 200.00, 'succeeded', $3, now() - interval '2 hours')",
+        user_id, our_ref, credit.id,
+    )
+    with pytest.raises(withdrawals.RecentReversibleDeposit):
+        await _request(pool, redis, conn, user_id, Decimal("100.00"))
+
+
 async def test_recent_deposit_blocks_withdrawal(pool, redis, conn):
     user_id = await create_funded_user(conn, Decimal("1000.00"))
     our_ref = f"DEP-test-recent-{user_id}"
