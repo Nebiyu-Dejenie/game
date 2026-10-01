@@ -70,8 +70,14 @@ async def test_serve_commands_survives_one_transient_redis_error(pool, redis, ca
     the room until the whole engine cycled. Proves the fix: one transient
     error is logged and retried, not fatal -- a command sent shortly after
     still reaches the engine.
+
+    The lobby is long on purpose. The injected error costs the command loop
+    its 1 s retry, and with create_room()'s default 1 s lobby the round
+    could start first, so on a slow runner the join came back 'not_joinable'
+    (GitHub CI, 2026-10-01). That proves the loop survived but fails the
+    assertion that it joined.
     """
-    room_id = await create_room(conn, stake=Decimal("10.00"), min_players=2)
+    room_id = await create_room(conn, stake=Decimal("10.00"), min_players=2, lobby_seconds=60)
     room = await load_room_config(pool, room_id)
     flaky_redis = _RedisFailsXreadOnce(redis)
     engine = RoundEngine(pool, flaky_redis, room, card_pool)
