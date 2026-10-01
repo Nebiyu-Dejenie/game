@@ -151,6 +151,26 @@ class RoomLock:
                 return
             self._last_refreshed_at = asyncio.get_running_loop().time()
 
+    async def confirm(self) -> bool:
+        """Asks Redis now, instead of waiting for the next refresh, whether
+        this worker still owns the room, and renews the TTL if it does.
+        For a caller that has just ridden out a Redis outage: Redis may
+        have come back empty (a restart), or the key may have expired
+        meanwhile and another worker taken the room. If Redis can't be
+        asked, the local view stands."""
+        try:
+            refreshed = await self._redis.eval(
+                _REFRESH_IF_OWNER, 1, self._key, self._worker_id, self._ttl_seconds
+            )
+        except Exception:
+            logger.warning("room_lock_confirm_failed", room_id=self._room_id, exc_info=True)
+            return self._held
+        if refreshed:
+            self._last_refreshed_at = asyncio.get_running_loop().time()
+        else:
+            self._held = False
+        return self._held
+
     async def release(self) -> None:
         if self._refresh_task is not None:
             self._refresh_task.cancel()

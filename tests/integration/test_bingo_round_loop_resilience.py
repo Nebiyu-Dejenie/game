@@ -18,8 +18,8 @@ import asyncpg
 import pytest
 import redis.exceptions
 
-from packages.core import bingo
-from services.engine import commands, round_engine
+from packages.core import bingo, ledger
+from services.engine import commands, recovery, round_engine
 from services.engine.round_engine import RoundEngine, load_room_config
 from tests.integration.conftest import create_funded_user, create_room
 
@@ -246,3 +246,57 @@ async def test_same_call_auto_mark_winners_all_win_even_when_claim_logging_is_sl
         await asyncio.wait_for(task, timeout=15)
 
     assert await _winners(pool, round_id) == {user_a, user_b}
+
+
+class _CallsFailUntilReleased:
+    """The real client, except that every number-call publish raises the
+    ConnectionError of a Redis that's down, until `release` is set."""
+
+    def __init__(self, real_redis) -> None:
+        self._real = real_redis
+        self.failing = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def publish(self, channel, message):
+        if not self.release.is_set() and json.loads(message).get("t") == "call":
+            self.failing.set()
+            raise redis.exceptions.ConnectionError("Connection closed by server.")
+        return await self._real.publish(channel, message)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+async def test_a_round_does_not_play_on_through_a_redis_outage_it_lost_the_room_in(
+    pool, redis, card_pool, conn, monkeypatch
+):
+    """The other side of #23. Calls must not carry on while Redis is down:
+    nobody sees them, and claims can't reach the engine either, so an
+    auto-mark card would win while manual players were locked out. Found by
+    the chaos test that restarts the real Redis (CI, 2026-10-01): the engine
+    played on and settled a winner, where the round should have been left
+    for recovery to refund. Here, the calls fail while Redis is "down", the
+    room lock vanishes as it does when Redis restarts empty, and card 1
+    would win on the first call."""
+    _card_1_wins(monkeypatch, card_pool)
+    outage = _CallsFailUntilReleased(redis)
+    room_id, engine, task, _ = await _start_two_player_round(pool, outage, pool, card_pool, conn)
+    round_id = engine.round_id
+    players = [r["user_id"] for r in await pool.fetch("SELECT user_id FROM round_entries WHERE round_id = $1", round_id)]
+    try:
+        await asyncio.wait_for(outage.failing.wait(), timeout=10)
+        await redis.delete(f"room:lock:{room_id}")  # Redis came back empty
+        outage.release.set()
+        await asyncio.wait_for(task, timeout=15)  # the engine stops driving the room
+    finally:
+        await engine.stop()
+        if not task.done():
+            task.cancel()
+
+    assert await _winners(pool, round_id) == set()
+    assert await pool.fetchval("SELECT status FROM rounds WHERE id = $1", round_id) == "running"
+    # What the next owner's recovery then does: a full refund.
+    assert round_id in await recovery.recover_orphaned_rounds(pool, redis)
+    for user_id in players:
+        cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
+        assert await ledger.balance(conn, cash.id) == Decimal("1000.00")  # create_funded_user's default

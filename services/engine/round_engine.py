@@ -49,6 +49,11 @@ WINNER_TIE_WINDOW_SECONDS = 0.05
 CALL_UPDATE_ATTEMPTS = 3
 CALL_UPDATE_RETRY_BACKOFF_SECONDS = 0.5
 
+# How long a number call waits for Redis to come back before the engine
+# gives up on the round. It then ends, and recovery refunds the round once a
+# worker can claim the room again. See _publish_call().
+CALL_PUBLISH_GIVE_UP_SECONDS = 30.0
+
 
 @dataclass(frozen=True)
 class RoomConfig:
@@ -983,7 +988,7 @@ class RoundEngine:
                 round_id=round_id,
             )
             return False
-        await self._publish_room(
+        if not await self._publish_call(
             {
                 "t": "call",
                 "round_id": round_id,
@@ -991,7 +996,8 @@ class RoundEngine:
                 "number": number,
                 "letter": bingo.letter_for(number),
             }
-        )
+        ):
+            return False
 
         # Keep scanning every auto-mark-eligible entry for this call, even
         # after the first winner flips self._status to "settling" -- a
@@ -1331,6 +1337,44 @@ class RoundEngine:
             logger.warning(
                 "room_publish_failed", room_id=self._room.id, message_type=message.get("t"), exc_info=True
             )
+
+    async def _publish_call(self, message: dict[str, object]) -> bool:
+        """Publishes a number call, waiting out a Redis outage rather than
+        carrying on. Every other broadcast is best-effort (_publish_room()),
+        but a call isn't: while Redis is down nobody sees the calls and
+        nobody can claim (claims travel through Redis too), so calling on
+        would let auto-mark cards win while manual players are locked out.
+
+        Returns False if, once Redis answers again, this engine no longer
+        owns the room: Redis came back empty (a restart), or the lock
+        expired and another worker may hold it. The round is then left as it
+        is, for the next owner's recovery to refund. Raises if Redis stays
+        unreachable past CALL_PUBLISH_GIVE_UP_SECONDS, which ends this
+        engine, as any Redis error here did before (platform audit,
+        2026-09-29; test_bingo_round_loop_resilience.py)."""
+        loop = asyncio.get_running_loop()
+        give_up_at = loop.time() + CALL_PUBLISH_GIVE_UP_SECONDS
+        delay = 0.25
+        waited = False
+        while True:
+            try:
+                await self._redis.publish(f"room:{self._room.id}", json.dumps(message))
+                break
+            except redis.exceptions.RedisError:
+                if loop.time() >= give_up_at:
+                    raise
+                if not waited:
+                    logger.warning(
+                        "call_publish_failed_waiting_for_redis",
+                        room_id=self._room.id, round_id=self._round_id, exc_info=True,
+                    )
+                waited = True
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 2.0)
+        if waited and not await self._lock.confirm():
+            logger.warning("call_stopped_room_lock_lost", room_id=self._room.id, round_id=self._round_id)
+            return False
+        return True
 
     async def _push_balance_updates(self, user_ids: list[int]) -> None:
         """Pushes each user's balance after a payout or refund has
