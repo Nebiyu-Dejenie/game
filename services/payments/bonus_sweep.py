@@ -30,25 +30,32 @@ async def sweep_bonus_wagering(pool: asyncpg.Pool, redis: Redis) -> None:
         "SELECT id, user_id, wagering_required, expires_at, created_at FROM bonuses WHERE status = 'active'"
     )
     for row in rows:
-        async with pool.acquire() as conn:
-            progress = await wagering_progress_for_user_since(
-                conn, user_id=row["user_id"], since=row["created_at"]
-            )
-            await conn.execute(
-                "UPDATE bonuses SET wagering_progress = $2, updated_at = now() WHERE id = $1",
-                row["id"],
-                progress,
-            )
+        # One bonus that can't be processed must not end the pass: every
+        # active bonus after it, other players' included, would never
+        # convert or expire (platform audit, 2026-10-01). It's logged and
+        # retried on the next tick.
+        try:
+            async with pool.acquire() as conn:
+                progress = await wagering_progress_for_user_since(
+                    conn, user_id=row["user_id"], since=row["created_at"]
+                )
+                await conn.execute(
+                    "UPDATE bonuses SET wagering_progress = $2, updated_at = now() WHERE id = $1",
+                    row["id"],
+                    progress,
+                )
 
-            if progress >= row["wagering_required"]:
-                converted = await convert_bonus_to_cash(conn, bonus_id=row["id"])
-                if converted:
-                    logger.info("bonus_wagering_requirement_met", bonus_id=row["id"], user_id=row["user_id"])
-                    await publish_balance_update(pool, redis, row["user_id"])
-                continue
+                if progress >= row["wagering_required"]:
+                    converted = await convert_bonus_to_cash(conn, bonus_id=row["id"])
+                    if converted:
+                        logger.info("bonus_wagering_requirement_met", bonus_id=row["id"], user_id=row["user_id"])
+                        await publish_balance_update(pool, redis, row["user_id"])
+                    continue
 
-            if row["expires_at"] is not None and row["expires_at"] <= datetime.now(timezone.utc):
-                expired = await expire_bonus(conn, bonus_id=row["id"])
-                if expired:
-                    logger.info("bonus_expired_unwagered", bonus_id=row["id"], user_id=row["user_id"])
-                    await publish_balance_update(pool, redis, row["user_id"])
+                if row["expires_at"] is not None and row["expires_at"] <= datetime.now(timezone.utc):
+                    expired = await expire_bonus(conn, bonus_id=row["id"])
+                    if expired:
+                        logger.info("bonus_expired_unwagered", bonus_id=row["id"], user_id=row["user_id"])
+                        await publish_balance_update(pool, redis, row["user_id"])
+        except Exception:
+            logger.exception("bonus_sweep_row_failed", bonus_id=row["id"], user_id=row["user_id"])

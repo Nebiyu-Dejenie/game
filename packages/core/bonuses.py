@@ -87,6 +87,19 @@ async def grant_bonus(
             idempotency_key=idempotency_key,
             memo=reason,
         )
+        # A grant racing this one can pass the check above before it
+        # commits. Its post() then waits on the key and returns the first
+        # grant's transaction, by which time that grant's bonuses row is
+        # committed and visible. Without this, a second row went in on the
+        # same credit, and converting it later raised InsufficientFunds in
+        # the bonus sweep (platform audit, 2026-10-01).
+        raced = await conn.fetchrow(
+            "SELECT id, user_id, rule_id, referral_of_user_id, amount, wagering_required, "
+            "status, grant_txn_id FROM bonuses WHERE grant_txn_id = $1",
+            txn.id,
+        )
+        if raced is not None:
+            return Bonus(**dict(raced))
         row = await conn.fetchrow(
             """
             INSERT INTO bonuses
