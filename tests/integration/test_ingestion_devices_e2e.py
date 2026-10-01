@@ -90,7 +90,16 @@ async def test_superadmin_registers_revokes_reactivates_and_rotates_a_device_ove
     old_hash = row["token_hash"]
     await page.click(f'tr[data-device-pk="{device_pk}"] .rotate-token-btn')
     await page.wait_for_selector("#toast.visible", timeout=5000)
-    await page.wait_for_selector("#new-token-panel pre.code-block", timeout=5000)
+    # The panel from the registration above is still on screen with the old
+    # token, so waiting for the selector alone could read the old token
+    # before the rotation's response renders (it did on GitHub CI,
+    # 2026-10-01). Wait for the text itself to change.
+    await page.wait_for_function(
+        "(old) => { const el = document.querySelector('#new-token-panel pre.code-block');"
+        " return !!el && el.textContent.trim() !== '' && el.textContent.trim() !== old; }",
+        arg=shown_token.strip(),
+        timeout=5000,
+    )
     rotated_token = await page.inner_text("#new-token-panel pre.code-block")
     assert rotated_token.strip() != shown_token.strip()
 
