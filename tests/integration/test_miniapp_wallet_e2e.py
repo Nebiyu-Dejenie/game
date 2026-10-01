@@ -737,16 +737,18 @@ async def test_full_lifecycle_registration_through_withdrawal_using_the_manual_r
             "document.getElementById('wallet-cash').textContent.includes('300.00')", timeout=10000
         )
         # request_withdrawal()'s chargeback-window gate (30 real minutes
-        # in this environment's settings) correctly treats a just-
-        # -succeeded deposit as reversible regardless of rail -- a real,
-        # already-existing protection this test ran straight into on its
-        # first pass, not something to special-case around in the
-        # product code. Backdating here is the test's own concern:
-        # simulating that the window has genuinely elapsed, the same
-        # "age a row via direct SQL" technique test_admin_withdrawals.py
-        # already uses for its own stuck-payout test.
+        # in this environment's settings) correctly treats a just-credited
+        # deposit as reversible, regardless of rail. To get past it, this
+        # test sets the window to 0 for its own run (the operator's own
+        # admin setting, restored in the finally below). It used to
+        # backdate payments.created_at instead, but the window now starts
+        # at the credit's ledger transaction, which is append-only and
+        # can't be backdated (platform audit #79, 2026-10-01).
         await conn.execute(
-            "UPDATE payments SET created_at = now() - interval '1 hour' WHERE id = $1", deposit_payment_id
+            "INSERT INTO platform_settings (key, value, updated_by_admin_id) "
+            "VALUES ('withdraw_chargeback_window_minutes', '0'::jsonb, $1) "
+            "ON CONFLICT (key) DO UPDATE SET value = '0'::jsonb, updated_by_admin_id = $1",
+            admin_id,
         )
 
         # --- Play ---
@@ -830,6 +832,7 @@ async def test_full_lifecycle_registration_through_withdrawal_using_the_manual_r
         await page.screenshot(path="/tmp/miniapp-full-lifecycle.png")
         await page.close()
     finally:
+        await conn.execute("DELETE FROM platform_settings WHERE key = 'withdraw_chargeback_window_minutes'")
         await admin_queries.set_payment_provider_availability_admin(
             pool, admin_id=admin_id, provider="chapa", direction="in", enabled=True,
             reason="test cleanup", ip_address=None,
