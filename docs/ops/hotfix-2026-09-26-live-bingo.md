@@ -207,6 +207,11 @@ is unaffected (`/healthz` 200, still `a7603c5`).
   counts a round in the ticket's own transaction), #50 (the circuit
   breaker demotes one tier per trip), #64 (hot-cold lookback bounded);
 - `fc4fd3b`, `d5c5703`: monitoring config (profile-gated, doesn't start).
+- `2fefe43`: a Bingo number call waits out a Redis outage, and the round
+  stops for recovery to refund if the engine lost the room meanwhile. This
+  fixes a regression in #23 found by CI's chaos test.
+- CI repairs (`40e5c6d`, `9053103`): not deployed code, but they're why
+  GitHub CI now verifies the release.
 
 Verified before deploying: mypy clean; full suite 1,857 passed; the only
 failures were the two backup drills (they can't run against the
@@ -275,6 +280,8 @@ g gateway       services/gateway/connection.py       'gateway_writer_failed'
 g engine-worker services/engine/round_engine.py      'claimed_at=call_time'
 g engine-worker services/engine/round_engine.py      'engine_command_reply_failed'
 g engine-worker services/engine/round_engine.py      'CALL_UPDATE_ATTEMPTS = '
+g engine-worker services/engine/round_engine.py      'async def _publish_call'
+g engine-worker services/engine/room_lock.py         'async def confirm'
 g payout-worker services/payments/withdrawals.py     'async def _refs_still_queued'
 g payout-worker services/payments/payout_worker.py   'payout_consumer_exited'
 g payout-worker services/payments/deposits.py        'deposit_poll_failed'
