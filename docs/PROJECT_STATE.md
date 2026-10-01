@@ -136,7 +136,7 @@ Waiting on the operator, roughly in the order they unblock work.
 | # | Decision | Recommendation | Blocks |
 |---|---|---|---|
 | ~~D0~~ | ~~Telebirr SMS deposits still enabled~~ | **Done 2026-10-01 09:13 UTC**: switched off at the operator's instruction | – |
-| D1 | A network path to the server (the dev PC is on another network) | Rejoin the server's LAN, or add Tailscale or Cloudflare Access SSH | Every deploy |
+| D1 | A network path to the server that doesn't depend on the dev PC being on its LAN | **In progress: `ssh.arada.click` through the existing tunnel, behind Cloudflare Access** ([ops/ssh-access.md](ops/ssh-access.md)). The tunnel route is in place; the operator checks sshd and UFW (step 2) and creates the Access app (step 3); then the DNS record goes live | Every deploy |
 | D2 | OK to push to `origin` (the auto-mode check blocked it) | Yes | The remote falling behind local work |
 | D3 | Alerting: an ops Telegram chat id, a token for a separate ops bot, a healthchecks.io URL | Provide all three | Monitoring |
 | D4 | Identical-picks exposure fix (it changes the risk model) | Approve before any opening wider than a few testers | Keno Stage 2 |
@@ -229,7 +229,7 @@ Shared code lives in `packages/core`. The key modules:
 
 | Environment | Where | Notes |
 |---|---|---|
-| **Production (current)** | `zemen-game-server`, 192.168.1.115, checkout `~/apps/igame`, `deploy/docker-compose.prod.yml` | Reachable only from its LAN. The containerized Cloudflare tunnel serves `arada.click`. |
+| **Production (current)** | `zemen-game-server`, 192.168.1.115, checkout `~/apps/igame`, `deploy/docker-compose.prod.yml` | Reachable only from its LAN today; `ssh.arada.click` through the tunnel is being set up ([ops/ssh-access.md](ops/ssh-access.md)). The containerized Cloudflare tunnel serves `arada.click`. |
 | Older deployment | `arada.fun` | Host-level cloudflared forwarding to an untracked Traefik stack (DECISIONS 2026-09-01 and 09-14). Current status: unconfirmed. |
 | Dev machine | WSL | Dev DB on 5433 is on an old schema: **don't run tests against it**. `~/AradaBingo` is archived and now uses its own database (`aradabingo_dev`). |
 | Test databases | Throwaway containers | Postgres 15 on 5434 and Redis 7 on 6381 (more on 5435–5437 / 6382–6384 for parallel work). See [Testing Status](#testing-status). |
@@ -832,6 +832,7 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
+- **2026-10-01 12:17 UTC:** Tunnel route `ssh.arada.click → ssh://172.17.0.1:22` added to the production tunnel config and the tunnel restarted (no player affected, every hostname verified). Inert until its DNS record is published; the operator's steps are in `ops/ssh-access.md`. Side finding: `/metrics` is publicly reachable on the tunnel hostnames.
 - **2026-10-01 09:13 UTC:** Telebirr SMS deposits switched off at the operator's instruction (D0). Done through the audited provider-availability function (audit row #8). The gateway and bot containers both report the rail as not redeemable.
 - **2026-10-01 (later still):** Keno Stage 1 reserve funded: 30,000.00 from house_float, after the operator confirmed the exact transaction. Verified (ledger transaction #4, audit row #7, reconcile OK, Tier 1, ceiling 3,000.00). Step 3 (testers) is next.
 - **2026-10-01 (later):** **Deployed the Step 1 release** (`2aa504a`, 07:38 UTC) through the runbook script. Every check passed; no errors or restarts after 6 minutes.

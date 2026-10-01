@@ -95,4 +95,10 @@ ingress:
   # admin.arada.click; see DECISIONS.md 2026-09-07).
   - hostname: sms.arada.click
     service: http://sms:8006
+  # SSH to this host through the tunnel (2026-10-01; docs/ops/ssh-access.md).
+  # Reached only with `cloudflared access ssh`, behind a Cloudflare Access
+  # policy; port 22 is never forwarded to the internet. 172.17.0.1 is the
+  # host on Docker's default bridge, where sshd listens (0.0.0.0:22).
+  - hostname: ssh.arada.click
+    service: ssh://172.17.0.1:22
   - service: http_status:404
