@@ -1,6 +1,11 @@
 # SSH access as `ssh.arada.click`
 
-**Status (2026-10-01): step 1 done; steps 2 and 3 are for the operator; then steps 4 and 5.**
+**Status (2026-10-01): step 1 done. Blocked on step 2: the server accepts password logins**
+(`ssh -o PreferredAuthentications=none cosmic@192.168.1.115` answers
+`Permission denied (publickey,password)`). So `99-officos.conf`'s
+`PasswordAuthentication no` is being overridden, as feared below. The DNS
+record (step 4) stays unpublished until a re-check shows `(publickey)` only,
+because publishing first would put password-guessable SSH on the internet.
 Goal: `ssh cosmic@ssh.arada.click` from anywhere, instead of only from the
 server's LAN (`192.168.1.115`), and without opening port 22 to the internet.
 
@@ -50,6 +55,28 @@ Added to the live `config.yml`, before the `http_status:404` catch-all
   record.
 
 ### 2. Operator: check sshd and the firewall (needs `sudo`)
+
+**One block to paste** (on the server, from a session you keep open). It
+backs up `/etc/ssh`, makes the hardening file sort first so it wins,
+validates before reloading, and reverts itself if validation fails:
+```bash
+sudo bash -c '
+set -e
+B=/root/ssh-backup-$(date +%Y%m%d-%H%M%S); cp -a /etc/ssh "$B"; echo "backup: $B"
+grep -iE "^[[:space:]]*PasswordAuthentication" /etc/ssh/sshd_config.d/50-cloud-init.conf || true
+mv /etc/ssh/sshd_config.d/99-officos.conf /etc/ssh/sshd_config.d/01-officos.conf
+if sshd -t; then systemctl reload ssh; else
+  mv /etc/ssh/sshd_config.d/01-officos.conf /etc/ssh/sshd_config.d/99-officos.conf; echo "sshd -t failed: reverted"; exit 1; fi
+sshd -T | grep -Ei "^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin|pubkeyauthentication|maxauthtries) "
+ufw status verbose
+'
+```
+Expected last lines: `passwordauthentication no`, `kbdinteractiveauthentication no`,
+`permitrootlogin no`, `pubkeyauthentication yes`, `maxauthtries 3`.
+Re-check without root: `ssh -o PreferredAuthentications=none -o PubkeyAuthentication=no cosmic@192.168.1.115`
+must now answer `Permission denied (publickey).`
+
+The same steps, one at a time:
 
 Keep your current SSH session open throughout, so a mistake can't lock you
 out.
