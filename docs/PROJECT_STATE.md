@@ -4,8 +4,8 @@ The one page to read first. It says where the project stands today, what's
 safe to change, what's waiting on whom, and where the detail lives. Every
 other document goes deeper on one topic; this one links to them.
 
-**Last updated:** 2026-09-30 · **Production:** `a7603c5` (deployed 2026-09-29) ·
-**Main:** ahead of production by the Step 1 release (not yet deployed) ·
+**Last updated:** 2026-10-01 · **Production:** `a7603c5` (deployed 2026-09-29) ·
+**Main:** ahead of production by the Step 1 release (authorized 2026-10-01, not yet deployed: no network path) ·
 **Alembic head:** `b5d9e3a1c7f2` (production and main agree)
 
 ## Contents
@@ -75,8 +75,9 @@ Rules for editing it:
 | Keno | **Deployed but off** (`keno_enabled = false`), beta allowlist on, Tier 1, reserve 0 | same; read 2026-09-29 |
 | Telebirr SMS deposits | Operator switched them off on 2026-09-29 because of the forged-SMS hole (audit #9). **Not yet re-verified on the server.** | audit #9 |
 | Monitoring | **No Prometheus or Alertmanager in production.** No alert has ever fired there. Config is ready but not started (profile `monitoring`). | `deploy/docker-compose.prod.yml` |
-| Step 1 release | Tested and ready (full suite green), **not deployed**: the dev machine can't reach the server's LAN | runbook "Step 4 (prepared ...)" |
-| Git | `origin` = `github.com/Nebiyu-Dejenie/game`. The server's checkout still points at the dead `igame` remote, so deploys travel as a git bundle. Local `main` is ahead of `origin` until the operator OKs the push. | |
+| Step 1 release | **Deploy authorized by the operator on 2026-10-01, not yet run**: the server is still unreachable from the dev machine (Wi-Fi 10.64.6.x vs the server's 192.168.1.x LAN; SSH times out). Pre-deploy review done (see In Progress). | runbook "Step 4 (prepared ...)" |
+| Git | `origin` = `github.com/Nebiyu-Dejenie/game`, in sync with local `main` (pushed 2026-10-01). The server's checkout still points at the dead `igame` remote, so deploys travel as a git bundle. The repo has no self-hosted runner, so CD can't deploy. | `gh api .../actions/runners` |
+| CI | Unbroken on 2026-10-01 (it had failed on every run since 2026-09-26, waiting for a container name that no longer exists). mypy, the full suite and the image build now pass on GitHub. | `.github/workflows/ci.yml` |
 | Audit | 115 findings. Every critical and high one is verified; see [Known Bugs](#known-bugs) | [audit/platform-audit-2026-09.md](audit/platform-audit-2026-09.md) |
 | Ledger oddity | `house_float` read −1,000.00 on 2026-09-29, from ledger transaction #1; still an open question | [Open Questions](#open-questions) |
 
@@ -147,6 +148,19 @@ Waiting on the operator, roughly in the order they unblock work.
 | D11 | Simulated players share real pots and aren't disclosed | Legal review | Compliance |
 | D12 | `PHONE_ENCRYPTION_KEY` in git history (LB-D3) | Rotate the key, or rewrite history | Security |
 | D13 | `house_float` −1,000.00 from transaction #1 | Explain or correct it with a reversing entry | Clean books |
+| D14 | **Who funds the jackpot slice when a Keno ticket is refunded?** See the trace below | Decide A or B; until then A (today's behaviour) stays, pinned by a test | Accurate jackpot accounting |
+
+**D14, traced on 2026-10-01.** Nothing has been changed; the code's comments now
+describe it accurately.
+
+- **What happens today (A).** At placement, a 20.00 stake is split: 19.70 to `keno_reserve`, 0.30 (1.5%) to `keno_jackpot_pool` (`packages/core/keno_tickets.py`). A refund on a failed round pays the player the full 20.00, all of it from `keno_reserve`, and leaves the 0.30 in the pool (`services/engine/keno_round_engine.py`, `_refund_one_ticket`). Net: the player is whole, the reserve is down 0.30, the pool is up 0.30. Pinned by `test_a_refund_returns_the_full_stake_from_the_reserve_and_leaves_the_jackpot_slice_in_the_pool`.
+- **What the repository says.**
+  - `keno.md` 5.3: a stuck round refunds every ticket and "must never silently eat user money". Both options satisfy this.
+  - `keno.md` 8.3: the jackpot is "player-funded … zero operator liability", "pays only from the pool and can never exceed the pool balance". Under A, the operator's reserve funds the slice of every refunded ticket, so the pool is no longer purely player-funded.
+  - The original code (6fcfaba, 2026-09-17) had a docstring saying the refund reverses the split, a comment saying "the jackpot diversion is never refunded", and no rationale in the commit message.
+  - No decision in DECISIONS.md covers it.
+- **Option B (reverse the split).** Take the 0.30 back from the pool. The catch: `_pay_jackpot` pays out the *whole* pool, including slices from the next round's tickets, whose betting overlaps settlement. A refund right after a jackpot could therefore drive the pool negative. B needs a rule for that, for example take back at most what the pool holds and let the reserve cover the rest.
+- **Size.** Refunds only happen when a round fails before its draw, which is rare. The cost is 1.5% of the refunded stakes; a failed round with 10,000 ETB staked costs the reserve 150.
 
 ---
 
@@ -247,10 +261,18 @@ The major milestones. Details in git and the linked docs.
 
 | Work | State | Next action |
 |---|---|---|
-| Step 1 release | Ready; mypy clean; full suite 1,863 passed | Deploy once there's network (D1) |
+| Step 1 release | Authorized; reviewed 2026-10-01 (below); mypy clean; full suite green locally and on GitHub CI | Deploy as soon as there's a network path (D1) |
 | Keno launch Steps 2–4 | Waiting on Step 1 | See [Keno Launch Plan](#keno-launch-plan) |
 | Audit medium/low verification | 66 not yet verified | Money paths first; see [Recommended Next Work](#recommended-next-work) |
 | Lock-order sweep | Done for Keno and payments; admin, bot and gateway still to do | |
+
+**Step 1 pre-deploy review (2026-10-01):**
+- **Scope:** `a7603c5..main`. Every commit from the Keno fixes onward; 26 code and config files.
+- **Migrations:** none, so alembic stays `b5d9e3a1c7f2`.
+- **Build inputs** (Dockerfile, requirements.lock, pyproject.toml): unchanged since the running image. The image builds on GitHub CI.
+- **Debug leftovers:** the only hits for print, breakpoint, console.log, localhost or a credential string were the deliberate loopback port bindings for Prometheus and Alertmanager.
+- **Money and game paths:** each was reviewed and reproduced when it was made (see each commit message). One regression was found by CI's chaos test and fixed: the engine now pauses calls during a Redis outage, instead of playing on.
+- **Not changed:** infrastructure. The monitoring profile stays off until D3.
 
 ---
 
@@ -271,7 +293,7 @@ Open items that matter most:
 - **#25, #39, #57:** confirmed, waiting on the operator's rule ([Decisions Needed](#decisions-needed)). #25 and #57 have strict `xfail` tests.
 - **#41 / #55 (partly):** the stop-loss is safe, because it's enforced from tickets at placement. After a hard crash, `stop_on_win` and the session summary can still miss one round's result.
 - **Not yet in the audit:**
-  - A Keno refund pays the full stake from `keno_reserve`, and the 1.5% jackpot slice stays in the pool. The player is made whole; the reserve funds the slice. This is deliberate per the code comment, but the method's docstring says the split is reversed.
+  - A Keno refund pays the full stake from `keno_reserve`, and the 1.5% jackpot slice stays in the pool. The player is made whole; the reserve funds the slice. Traced, documented and pinned by a test; the rule is decision D14.
 
 ---
 
@@ -486,7 +508,7 @@ Source: `packages/core/ledger.py`.
 - **Keno:**
   - Stake: `user_cash` → `keno_reserve` plus `keno_jackpot_pool` (1.5%).
   - Win: `keno_reserve` → `user_cash`.
-  - Refund: the full stake from `keno_reserve`.
+  - Refund: the full stake from `keno_reserve`; the jackpot slice stays in the pool (D14).
 - **Reserve:** `house_float` ↔ `keno_reserve`, one transfer per `request_id`.
 - **Deposits** (Chapa, manual, Telebirr): `provider_settlement` → `user_cash`.
 - **Withdrawals:**
@@ -663,7 +685,11 @@ Source: `packages/core/ledger.py`.
   - Never point tests at the dev database on 5433.
   - Don't run two full suites against one database.
   - A test that fails only in the full run is usually shared state; see [KNOWN_TEST_FLAKES.md](KNOWN_TEST_FLAKES.md).
-- **CI** (`.github/workflows/ci.yml`): mypy, the default suite, `chaos_infra`, then e2e; load tests in a job that may fail; a Docker build.
+- **CI** (`.github/workflows/ci.yml`): mypy, the default suite, `chaos_infra` (one process per file), then e2e. Load tests run in a separate job that's allowed to fail; there's also a Docker build.
+  - It had never passed on this repository until 2026-10-01.
+  - First green results on GitHub: mypy, the default suite (1,869 passed, 3 xfailed) and the Docker build.
+  - The chaos run found the Redis-outage regression (now fixed).
+  - The load job's `test_many_sockets_receive_a_call_within_budget` measured a p99 of 414 ms against a 300 ms budget on a shared runner; not investigated yet.
 
 ---
 
@@ -683,7 +709,7 @@ Fix a doc when you touch its area.
 | TELEBIRR_SMS_OPERATIONS_GUIDE.md | "Not yet deployed" | Deployed, then switched off |
 | `deploy/docker-compose.prod.yml` header | "six deployable units", `sms.arada.fun` | Nine app services, `sms.arada.click` |
 | DECISIONS.md header | "Newest first" | Mostly oldest first after line 10,000; it has no entry for the arada.click rebrand |
-| Keno refund docstring | Reverses the stake split | Refunds the full stake from the reserve; the jackpot slice stays in the pool |
+| Keno refund docstring | Reverses the stake split | Corrected 2026-10-01 to match the code; the rule is D14 |
 | `awaiting_reconciliation` in docs | A payment status | A worker outcome; the row stays `processing` |
 
 ---
@@ -734,7 +760,6 @@ Deliberately not built, with the reason:
 - Is Telebirr SMS really off in production? This is checked in the Step 1 pre-flight.
 - Is the `arada.fun` deployment still running, and does anything still point at it?
 - Does Chapa reuse a transaction reference across a failed and a later successful attempt? The #28 fix handles it either way, but the answer decides #30.
-- Should the reserve fund the jackpot slice on Keno refunds (today's behaviour), or should refunds reverse the split?
 - Are the systemd timers (backup, basebackup, WAL prune, reconcile) installed on the arada.click server? Unconfirmed.
 - Licensing for real-money Keno: status unconfirmed ([keno/12-compliance.md](keno/12-compliance.md)).
 
@@ -806,4 +831,8 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
+- **2026-10-01:** The operator authorized the Step 1 deploy. It's still blocked by the network: the server is unreachable from the dev machine, and the repo has no CD runner.
+  - Pre-deploy review done. Main pushed to `origin`.
+  - CI repaired, and its chaos test found a regression in the #23 fix: Bingo calls played on through a Redis outage. Fixed in 2fefe43.
+  - Keno refund and jackpot accounting traced and recorded as decision D14 (behaviour unchanged, pinned by a test).
 - **2026-09-30:** Created. Built from four surveys of the code and docs (architecture and API, game and money rules, database and tests, decisions and roadmap), this session's production reads, and the audit tracker.

@@ -987,3 +987,52 @@ async def test_two_jackpot_winners_in_one_round_both_get_a_share(pool, redis):
             for t in ticket_ids
         ]
     assert all(share > 0 for share in shares), shares
+
+
+async def test_a_refund_returns_the_full_stake_from_the_reserve_and_leaves_the_jackpot_slice_in_the_pool(
+    pool: asyncpg.Pool, redis
+) -> None:
+    """Pins today's refund accounting (2026-10-01). Change it only together
+    with the operator's decision D14 in docs/PROJECT_STATE.md.
+
+    A 20.00 stake is split at placement: 19.70 to keno_reserve, 0.30 (1.5%)
+    to keno_jackpot_pool. A refund pays the player the full 20.00, all of it
+    from keno_reserve, and leaves the 0.30 in the pool. Net effect of a
+    stake and its refund: the player is whole, the reserve is down 0.30, the
+    pool is up 0.30. The spec (keno.md 8.3) calls the jackpot player-funded,
+    but doesn't say what a refund does with the slice."""
+    async with pool.acquire() as conn:
+        await _seed_fast_config_and_tier(conn)
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+        config_id = await conn.fetchval("SELECT id FROM keno_configs ORDER BY id DESC LIMIT 1")
+        tier_id = await conn.fetchval("SELECT id FROM keno_risk_tiers ORDER BY id DESC LIMIT 1")
+        paytable_id = await conn.fetchval("SELECT id FROM keno_paytables WHERE pick_count = 1 ORDER BY id DESC LIMIT 1")
+        server_seed = keno.generate_server_seed()
+        round_id = await conn.fetchval(
+            "INSERT INTO keno_rounds (seq, status, config_id, tier_id, server_seed, server_seed_hash) "
+            "VALUES ((SELECT COALESCE(MAX(seq),0)+1 FROM keno_rounds), 'betting_open', $1, $2, $3, $4) RETURNING id",
+            config_id, tier_id, server_seed, keno.server_seed_hash(server_seed),
+        )
+        await conn.fetchval(
+            "INSERT INTO keno_tickets (round_id, user_id, paytable_id, pick_count, stake, idempotency_key) "
+            "VALUES ($1, $2, $3, 1, 20, $4) RETURNING id",
+            round_id, user_id, paytable_id, f"test-{uuid.uuid4()}",
+        )
+        reserve = await ledger.get_or_create_account(conn, None, "keno_reserve")
+        jackpot = await ledger.get_or_create_account(conn, None, "keno_jackpot_pool")
+        cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
+        # The split place_ticket() posts at the default 150 bps.
+        await ledger.post(
+            conn, "keno_stake",
+            [ledger.Entry(cash.id, Decimal("-20")), ledger.Entry(reserve.id, Decimal("19.70")),
+             ledger.Entry(jackpot.id, Decimal("0.30"))],
+            idempotency_key=f"test-stake-{uuid.uuid4()}", created_by="test",
+        )
+        before = [await ledger.balance(conn, a.id) for a in (cash, reserve, jackpot)]
+
+    await KenoRoundEngine(pool, redis)._fail_and_refund_round(round_id, reason="stuck_round_recovery")
+
+    async with pool.acquire() as conn:
+        after = [await ledger.balance(conn, a.id) for a in (cash, reserve, jackpot)]
+    changes = [a - b for a, b in zip(after, before)]
+    assert changes == [Decimal("20.00"), Decimal("-20.00"), Decimal("0.00")]  # player, reserve, pool

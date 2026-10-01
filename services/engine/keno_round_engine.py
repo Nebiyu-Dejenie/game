@@ -715,9 +715,9 @@ class KenoRoundEngine:
 
     async def _fail_and_refund_round(self, round_id: int, *, reason: str) -> None:
         """Part 5.3: "A stuck round must never silently eat user money."
-        Every ticket refunded exactly (kind="keno_refund", reversing the
-        same stake split _seed/place_ticket originally posted), the
-        round marked failed, never left ambiguous."""
+        Every pending ticket's full stake goes back to the player
+        (kind="keno_refund"; see _refund_one_ticket() for which account
+        pays it), and the round is marked failed, never left ambiguous."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 # The round row is locked before its tickets are read.
@@ -759,13 +759,18 @@ class KenoRoundEngine:
         reserve_account = await ledger.get_or_create_account(conn, None, "keno_reserve")
         jackpot_account = await ledger.get_or_create_account(conn, None, "keno_jackpot_pool")
         cash_account = await ledger.get_or_create_account(conn, ticket["user_id"], "user_cash")
-        # Reverses the exact split place_ticket() originally posted
-        # (config's jackpot_diversion_bps at stake time isn't re-read
-        # here -- the refund only needs to sum to the original stake
-        # across the two accounts it came from, in any split, since both
-        # are system accounts with no per-account correctness
-        # requirement beyond the ledger's own zero-sum invariant. A
-        # single reserve-side reversal is simplest and exactly right).
+        # The whole stake comes back out of keno_reserve. place_ticket()
+        # split it (reserve, plus jackpot_diversion_bps into
+        # keno_jackpot_pool), but the jackpot slice is not taken back: it
+        # stays in the pool, so each refund costs the reserve that slice
+        # (0.30 of a 20.00 stake at 150 bps). Whether a refund should
+        # reverse the split instead is an open operator decision (D14 in
+        # docs/PROJECT_STATE.md). Reversing it naively could take the
+        # pool below zero: _pay_jackpot() pays out the whole pool,
+        # including the slices of the next round's tickets, whose betting
+        # overlaps this round's settlement. Pinned by
+        # test_a_refund_returns_the_full_stake_from_the_reserve_and_leaves
+        # _the_jackpot_slice_in_the_pool.
         await ledger.post(
             conn,
             "keno_refund",
@@ -774,7 +779,7 @@ class KenoRoundEngine:
             created_by="keno_round_engine",
         )
         await conn.execute("UPDATE keno_tickets SET status = 'refunded', settled_at = now() WHERE id = $1", ticket["id"])
-        _ = jackpot_account  # no jackpot-side entry: the jackpot diversion is never refunded, it stays in the pool
+        _ = jackpot_account  # no jackpot-side entry, as explained above
 
     async def _record_event(
         self, conn: ledger.AsyncpgConnection, round_id: int, from_status: str | None, to_status: str, *, reason: str | None = None
