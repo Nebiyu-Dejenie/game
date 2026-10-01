@@ -277,9 +277,15 @@ async def _apply_confirmed_status(
     ) as span:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Only an incoming payment from the provider that sent the
+                # event. A signed event naming a withdrawal's ref used to
+                # mark that withdrawal failed without refunding it, leaving
+                # the money in user_locked (platform audit, 2026-10-01).
                 payment = await conn.fetchrow(
-                    "SELECT id, user_id, amount, status FROM payments WHERE our_ref = $1 FOR UPDATE",
+                    "SELECT id, user_id, amount, status FROM payments "
+                    "WHERE our_ref = $1 AND direction = 'in' AND provider = $2 FOR UPDATE",
                     our_ref,
+                    provider_name,
                 )
                 if payment is None:
                     logger.warning("payment_webhook_unknown_ref", our_ref=our_ref, provider=provider_name)

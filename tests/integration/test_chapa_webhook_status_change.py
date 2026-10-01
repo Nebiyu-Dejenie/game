@@ -87,3 +87,23 @@ async def test_a_redelivered_success_webhook_still_credits_once(pool, redis, con
     assert await conn.fetchval(
         "SELECT count(*) FROM ledger_transactions WHERE idempotency_key = $1", our_ref
     ) == 1
+
+
+async def test_a_deposit_webhook_naming_a_withdrawal_leaves_the_withdrawal_alone(pool, redis, conn):
+    """Platform audit #70/#71: _apply_confirmed_status found the payment by
+    our_ref alone. A correctly signed Chapa event whose tx_ref named a
+    withdrawal (WD-...) and said 'failed' marked that withdrawal failed
+    without refunding it: the money stayed in user_locked with no way back,
+    and the payout dropped off the admin's stuck-payout list. It now only
+    touches an incoming payment from the same provider."""
+    from tests.integration.conftest import create_funded_user
+    from tests.integration.test_payout_worker import _approved_withdrawal
+
+    user_id = await create_funded_user(conn, Decimal("500.00"))
+    our_ref = await _approved_withdrawal(pool, redis, conn, user_id, Decimal("100.00"))
+    before = await conn.fetchrow("SELECT status FROM payments WHERE our_ref = $1", our_ref)
+
+    outcome = await _send(pool, redis, tx_ref=our_ref, reference=f"AP-{our_ref}", status="failed")
+
+    after = await conn.fetchrow("SELECT status FROM payments WHERE our_ref = $1", our_ref)
+    assert (outcome, after["status"]) == ("not_found", before["status"])
