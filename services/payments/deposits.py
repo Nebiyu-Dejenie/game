@@ -103,17 +103,31 @@ async def _check_deposit_rate_limit_and_minimum(
         raise BelowMinimumDeposit(f"amount {amount} is below the minimum {min_deposit}")
 
 
+# First key of the two-key advisory lock that serializes one player's
+# deposit-cap checks. The two-key form is a separate keyspace from the
+# single-key pg_advisory_xact_lock(user_id) that Bingo and Keno stakes take,
+# so this never waits on gameplay.
+_DEPOSIT_CAP_LOCK_NAMESPACE = 7301
+
+
 async def _check_deposit_eligibility(
     conn: AsyncpgConnection, *, user_id: int, amount: Decimal, daily_cap: Decimal
 ) -> None:
     """Raises UnknownDepositor / DepositorSelfExcluded / DepositorBanned /
-    DepositorCoolingOff / DailyDepositCapExceeded. Must be called with
-    `conn` already acquired (a caller-owned transaction for the manual
-    path; create_deposit_intent()'s own bare `pool.acquire()` block for
-    the automatic path, unchanged from before this was extracted). See
+    DepositorCoolingOff / DailyDepositCapExceeded. See
     _check_deposit_rate_limit_and_minimum's own docstring for why this is
     split out at all.
+
+    Must run inside the caller's transaction, and the caller must insert
+    the new payment row in that same transaction. The advisory lock taken
+    here is held until it commits, so a player's concurrent deposits are
+    checked one at a time, each seeing the ones before it. Without it,
+    several deposits started at once all saw the same total and together
+    went past the cap (platform audit, 2026-10-01). Every caller does this:
+    create_deposit_intent, manual.create_manual_deposit_request and
+    telebirr_redemption.redeem_evidence.
     """
+    await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", _DEPOSIT_CAP_LOCK_NAMESPACE, user_id)
     user_status = await conn.fetchval("SELECT status FROM users WHERE id = $1", user_id)
     if user_status is None:
         raise UnknownDepositor(f"user {user_id} does not exist")
@@ -181,33 +195,37 @@ async def create_deposit_intent(
             redis, user_id=user_id, amount=amount, min_deposit=min_deposit
         )
 
+        # The cap check and the pending row commit together (see
+        # _check_deposit_eligibility). The provider call below runs after
+        # the commit, so the lock is never held across an HTTP request.
         async with pool.acquire() as conn:
-            await _check_deposit_eligibility(conn, user_id=user_id, amount=amount, daily_cap=daily_cap)
+            async with conn.transaction():
+                await _check_deposit_eligibility(conn, user_id=user_id, amount=amount, daily_cap=daily_cap)
 
-            # Six digits is a minimum width, not a maximum: lpad() alone cuts a
-            # longer string down, so past 999999 ten consecutive values shared one ref.
-            ref_row = await conn.fetchrow(
-                "SELECT 'DEP-' || extract(year from now())::text || '-' || "
-                "lpad(n::text, greatest(6, length(n::text)), '0') AS our_ref "
-                "FROM nextval('payment_ref_seq') AS seq(n)"
-            )
-            assert ref_row is not None
-            our_ref: str = ref_row["our_ref"]
-            span.set_attribute("deposit.our_ref", our_ref)
+                # Six digits is a minimum width, not a maximum: lpad() alone cuts a
+                # longer string down, so past 999999 ten consecutive values shared one ref.
+                ref_row = await conn.fetchrow(
+                    "SELECT 'DEP-' || extract(year from now())::text || '-' || "
+                    "lpad(n::text, greatest(6, length(n::text)), '0') AS our_ref "
+                    "FROM nextval('payment_ref_seq') AS seq(n)"
+                )
+                assert ref_row is not None
+                our_ref: str = ref_row["our_ref"]
+                span.set_attribute("deposit.our_ref", our_ref)
 
-            payment_row = await conn.fetchrow(
-                """
-                INSERT INTO payments (user_id, direction, provider, our_ref, amount, status)
-                VALUES ($1, 'in', $2, $3, $4, 'pending')
-                RETURNING id
-                """,
-                user_id,
-                provider.name,
-                our_ref,
-                amount,
-            )
-            assert payment_row is not None
-            payment_id: int = payment_row["id"]
+                payment_row = await conn.fetchrow(
+                    """
+                    INSERT INTO payments (user_id, direction, provider, our_ref, amount, status)
+                    VALUES ($1, 'in', $2, $3, $4, 'pending')
+                    RETURNING id
+                    """,
+                    user_id,
+                    provider.name,
+                    our_ref,
+                    amount,
+                )
+                assert payment_row is not None
+                payment_id: int = payment_row["id"]
 
         try:
             with _tracer.start_as_current_span("deposit.provider_checkout") as checkout_span:
