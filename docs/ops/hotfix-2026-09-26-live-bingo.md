@@ -351,3 +351,47 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+## Deploy record: Step 4, 2026-10-01 07:38 UTC (`2aa504a`)
+
+The operator authorized it on 2026-10-01 ("You can deploy now"). The server
+became reachable from the dev machine at 06:45 UTC.
+
+- **What went out:** `a7603c5..2aa504a`, everything listed under "What ships"
+  above. No migration.
+- **Verified before deploying:**
+  - Pre-deploy review recorded in `docs/PROJECT_STATE.md`.
+  - mypy clean.
+  - On GitHub CI (on `3d559f9`, the same code apart from a chaos test and
+    docs): 1,876 passed, 3 xfailed; the image built.
+  - CI's chaos step watched a real Redis restart. The engine paused its
+    calls, confirmed it still owned the room, and settled normally; only the
+    test's old refund-only assertion failed, and it was updated in `2aa504a`.
+  - On `2aa504a` itself, the only failure was the known timing flake
+    `test_claim_rejected_on_one_line_then_accepted_once_a_second_line_completes`.
+- **Pre-flight:**
+  - Production at `a7603c5`, alembic `b5d9e3a1c7f2`.
+  - 0 real players' cards in open Bingo rounds; 0 pending Keno tickets.
+  - **Telebirr SMS deposits still enabled (since 2026-09-22)**, although the
+    operator meant to switch them off on 2026-09-29. Not changed by this
+    deploy; it's for the operator.
+- **Backup and rollback image:** backup
+  `~/backups/jobingo-20261001T073818Z.dump`; image tagged
+  `jobingo:rollback-a7603c5`.
+- **Build and restart:** image `582a9eaaffa0`; all nine app containers
+  restarted.
+- **Verified after the restart:**
+  - alembic `b5d9e3a1c7f2`; Keno `false|true` (off, allowlist on).
+  - All 25 code checks found the fix in its container.
+  - `/healthz` 200, all nine containers up, 0 errors in their logs.
+  - New rounds since the restart: Bingo 2, Keno 4.
+  - Reconcile: `ledger_reconciliation_ok`.
+- **Six minutes later:** 0 errors, 0 restarts in all nine, `/healthz` 200.
+
+**Rollback** (no schema change to undo):
+```
+docker tag jobingo:rollback-a7603c5 jobingo:latest
+docker compose -f deploy/docker-compose.prod.yml up -d --no-deps gateway admin payments bot sms engine-worker payout-worker simulated-players-worker keno-worker
+git checkout --detach a7603c5
+```
+The server's checkout is detached at `2aa504a`.

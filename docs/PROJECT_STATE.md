@@ -4,8 +4,8 @@ The one page to read first. It says where the project stands today, what's
 safe to change, what's waiting on whom, and where the detail lives. Every
 other document goes deeper on one topic; this one links to them.
 
-**Last updated:** 2026-10-01 · **Production:** `a7603c5` (deployed 2026-09-29) ·
-**Main:** ahead of production by the Step 1 release (authorized 2026-10-01, not yet deployed: no network path) ·
+**Last updated:** 2026-10-01 · **Production:** `2aa504a` (deployed 2026-10-01 07:38 UTC, the Step 1 release) ·
+**Main:** a few commits ahead (fixes for the next deploy) ·
 **Alembic head:** `b5d9e3a1c7f2` (production and main agree)
 
 ## Contents
@@ -70,12 +70,12 @@ Rules for editing it:
 | | State | Source |
 |---|---|---|
 | Brand / domain | Zemen Game at `arada.click` (Mini App, bot, admin, finance, agent portal, SMS) | [PRODUCTION_DOMAIN_AND_CLOUDFLARE.md](PRODUCTION_DOMAIN_AND_CLOUDFLARE.md), README |
-| Production commit | `a7603c5`, alembic `b5d9e3a1c7f2` | [ops/hotfix-2026-09-26-live-bingo.md](ops/hotfix-2026-09-26-live-bingo.md) "Deploy record" |
+| Production commit | `2aa504a`, alembic `b5d9e3a1c7f2`, deployed 2026-10-01 07:38 UTC; rollback image `jobingo:rollback-a7603c5` | [ops/hotfix-2026-09-26-live-bingo.md](ops/hotfix-2026-09-26-live-bingo.md) "Deploy record: Step 4" |
 | Bingo | **Live with real money** | same |
-| Keno | **Deployed but off** (`keno_enabled = false`), beta allowlist on, Tier 1, reserve 0 | same; read 2026-09-29 |
-| Telebirr SMS deposits | Operator switched them off on 2026-09-29 because of the forged-SMS hole (audit #9). **Not yet re-verified on the server.** | audit #9 |
+| Keno | **Deployed but off** (`keno_enabled = false`), beta allowlist on, Tier 1, reserve 0 | same; read 2026-10-01 |
+| Telebirr SMS deposits | **Still enabled** (`payment_provider_availability`: `true` since 2026-09-22, read 2026-10-01). The operator meant to switch them off on 2026-09-29 because of the forged-SMS hole (audit #9). See D0. | deploy pre-flight 2026-10-01 |
 | Monitoring | **No Prometheus or Alertmanager in production.** No alert has ever fired there. Config is ready but not started (profile `monitoring`). | `deploy/docker-compose.prod.yml` |
-| Step 1 release | **Deploy authorized by the operator on 2026-10-01, not yet run**: the server is still unreachable from the dev machine (Wi-Fi 10.64.6.x vs the server's 192.168.1.x LAN; SSH times out). Pre-deploy review done (see In Progress). | runbook "Step 4 (prepared ...)" |
+| Step 1 release | **Deployed 2026-10-01 07:38 UTC** (`2aa504a`); every post-deploy check passed, and there were no errors or restarts after 6 minutes | runbook "Deploy record: Step 4" |
 | Git | `origin` = `github.com/Nebiyu-Dejenie/game`, in sync with local `main` (pushed 2026-10-01). The server's checkout still points at the dead `igame` remote, so deploys travel as a git bundle. The repo has no self-hosted runner, so CD can't deploy. | `gh api .../actions/runners` |
 | CI | Unbroken on 2026-10-01 (it had failed on every run since 2026-09-26, waiting for a container name that no longer exists). mypy, the full suite and the image build now pass on GitHub. | `.github/workflows/ci.yml` |
 | Audit | 115 findings. Every critical and high one is verified; see [Known Bugs](#known-bugs) | [audit/platform-audit-2026-09.md](audit/platform-audit-2026-09.md) |
@@ -117,8 +117,8 @@ The operator's four steps. Status as of the header date.
 
 | Step | What | Status |
 |---|---|---|
-| 1 | Ship the Keno fixes and every verified audit fix, then deploy | **Ready, blocked on network.** Runbook section "Step 4 (prepared ...)" has the script, checks and rollback. |
-| 2 | Fund the prize reserve: 30,000.00 ETB, `house_float` → `keno_reserve` (`keno_reserve_deposit`) | Waits on Step 1 (it needs the double-post fix `24d2649`). Then show the operator the exact transaction and resulting per-round ceiling (3,000 at Tier 1). **Operator confirms before posting.** |
+| 1 | Ship the Keno fixes and every verified audit fix, then deploy | **Done 2026-10-01** (`2aa504a`) |
+| 2 | Fund the prize reserve: 30,000.00 ETB, `house_float` → `keno_reserve` (`keno_reserve_deposit`) | **Next.** The double-post fix is live. Show the operator the exact transaction and the resulting per-round ceiling (3,000 at Tier 1). **Operator confirms before posting.** |
 | 3 | Add internal testers to the beta allowlist | Needs each tester's Telegram username or id; they must have opened the bot once |
 | 4 | Flip `keno_enabled` | **The operator does this themselves** |
 
@@ -135,6 +135,7 @@ Waiting on the operator, roughly in the order they unblock work.
 
 | # | Decision | Recommendation | Blocks |
 |---|---|---|---|
+| **D0** | **Telebirr SMS deposits are still enabled in production** (read 2026-10-01), with the forged-SMS hole (#9) | Switch them off now: admin console → Payments → Provider availability → Telebirr SMS deposits off | Player money safety |
 | D1 | A network path to the server (the dev PC is on another network) | Rejoin the server's LAN, or add Tailscale or Cloudflare Access SSH | Every deploy |
 | D2 | OK to push to `origin` (the auto-mode check blocked it) | Yes | The remote falling behind local work |
 | D3 | Alerting: an ops Telegram chat id, a token for a separate ops bot, a healthchecks.io URL | Provide all three | Monitoring |
@@ -261,7 +262,7 @@ The major milestones. Details in git and the linked docs.
 
 | Work | State | Next action |
 |---|---|---|
-| Step 1 release | Authorized; reviewed 2026-10-01 (below); mypy clean; full suite green locally and on GitHub CI | Deploy as soon as there's a network path (D1) |
+| Step 1 release | **Deployed 2026-10-01** (`2aa504a`) | Watch production; the next deploy carries #81 and later fixes |
 | Keno launch Steps 2–4 | Waiting on Step 1 | See [Keno Launch Plan](#keno-launch-plan) |
 | Audit medium/low verification | 66 not yet verified | Money paths first; see [Recommended Next Work](#recommended-next-work) |
 | Lock-order sweep | Done for Keno and payments; admin, bot and gateway still to do | |
@@ -284,9 +285,9 @@ Tracked in [audit/platform-audit-2026-09.md](audit/platform-audit-2026-09.md)
 | Severity | Total | Fixed and deployed | Fixed, deploy pending | Open or partly fixed | Not yet verified |
 |---|---|---|---|---|---|
 | Critical | 9 | 7 | 0 | 1 (#9) | 1 (#3) |
-| High | 26 | 6 | 17 | 3 (#25, #32, #33) | 0 |
-| Medium | 46 | 1 | 5 (+2 already fixed) | 4 (#39, #41, #55, #57) | 34 |
-| Low | 34 | 0 | 1 | 1 (#86) | 32 |
+| High | 26 | 23 | 0 | 3 (#25, #32, #33) | 0 |
+| Medium | 46 | 10 (+2 already fixed) | 1 (#81) | 4 (#39, #41, #55, #57) | 29 |
+| Low | 34 | 1 | 0 | 1 (#86) | 32 |
 
 Open items that matter most:
 - **Telebirr SMS rail (#3, #9, #32, #33).** Anyone can mint evidence by texting a fake SMS. Whoever submits a reference first gets the deposit. `1,500.00` is parsed as 1. One transfer could be credited on two rails. **The rail is off**, and the fixes are designed in [payments/telebirr-evidence-and-redemption-design.md](payments/telebirr-evidence-and-redemption-design.md).
@@ -304,8 +305,8 @@ Open items that matter most:
 | R1 | **Correlated Keno exposure.** The round check assumes independent tickets, so many identical tickets aren't limited. At a 30,000 reserve, one all-hit round of identical 1-pick tickets empties the reserve at 1,308 / 654 / 262 tickets (stakes 10 / 20 / 50); the correct 3,000 cap would be 131 / 66 / 27. A 1-pick all-hit is 25%. | Low with a few testers; high once open | Keep Stage 1 to a small allowlist; fix before widening (D4) |
 | R2 | **No production alerting.** A dead worker, stuck round or ledger mismatch pages nobody. | Certain until fixed / high | Start the monitoring profile (D3) |
 | R3 | **Single server, local backups only.** Backups sit in `~/backups` on the same machine. | Low / critical | Off-box backups, VPS plan (D10) |
-| R4 | **Deploy path depends on the dev machine's LAN.** | Happening now / blocks fixes | D1 |
-| R5 | **Live Bingo fixes wait on deploy.** #23 and #24 (Redis blips end rounds; a dead command consumer), #22 (a co-winner dropped under DB latency), #28 to #31 and #35 (payments). | Medium / medium | Step 1 |
+| R4 | **Deploy path depends on the dev machine's LAN.** It was down from 2026-09-29 evening to 2026-10-01 06:45 UTC. | Recurring / blocks fixes | D1 |
+| R5 | **Telebirr SMS deposits still on** with the forgery hole (#9). | Exploitable now / high | D0 |
 | R6 | **Simulated players in real pots, undisclosed.** | Legal | D11 |
 | R7 | **Secrets in git history** (`PHONE_ENCRYPTION_KEY`). | Low / high | D12 |
 | R8 | **App ports published on the server's LAN,** and the gateway trusts `CF-Connecting-IP` from anyone who can reach port 8000. | Low (LAN only) | Bind to the tunnel network only |
@@ -769,7 +770,7 @@ Deliberately not built, with the reason:
 
 In order. Each item says what it unblocks.
 
-1. **Deploy Step 1** once there's a network path (D1). It ships 17 high fixes, 4 Keno medium fixes and the reserve double-post fix.
+1. ~~Deploy Step 1~~: done 2026-10-01 (`2aa504a`). **Switch Telebirr SMS deposits off** (D0).
 2. **Keno Steps 2–3:** show the reserve transaction, then post and verify it after confirmation; then add the testers. The operator flips Step 4.
 3. **Start monitoring** (needs D3), then test-fire an alert end to end.
 4. **Fix correlated Keno exposure** (after D4), before Stage 2.
@@ -831,6 +832,10 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
+- **2026-10-01 (later):** **Deployed the Step 1 release** (`2aa504a`, 07:38 UTC) through the runbook script. Every check passed; no errors or restarts after 6 minutes.
+  - The pre-flight found Telebirr SMS deposits still enabled (new D0).
+  - Also shipped: the payment fixes #70/#71, #78 and #79.
+  - #81 is fixed on main for the next deploy.
 - **2026-10-01:** The operator authorized the Step 1 deploy. It's still blocked by the network: the server is unreachable from the dev machine, and the repo has no CD runner.
   - Pre-deploy review done. Main pushed to `origin`.
   - CI repaired, and its chaos test found a regression in the #23 fix: Bingo calls played on through a Redis outage. Fixed in 2fefe43.
