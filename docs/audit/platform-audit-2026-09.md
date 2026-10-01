@@ -78,16 +78,16 @@ the status column as items are verified or fixed.
 | 67 | medium | `services/payments/bonus_sweep.py:32` | The bonus sweep has no per-item isolation: one failing bonus, or a Redis publish error, aborts the rest of the tick for every other player | Not yet verified |
 | 68 | medium | `services/payments/bonus_sweep.py:34` | The same wagering counts in full toward every active bonus a user holds at once | Not yet verified |
 | 69 | medium | `services/payments/deposits.py:151` | The daily deposit cap is check-then-act with no per-user lock; concurrent intents or redemptions exceed it | Not yet verified |
-| 70 | medium | `services/payments/deposits.py:278` | The deposit webhook handler looks up the payment by our_ref without filtering on direction, so it can change a withdrawal's status | Not yet verified |
-| 71 | medium | `services/payments/deposits.py:278` | _apply_confirmed_status never checks direction='in' or the provider on the payments row it locks | Not yet verified |
+| 70 | medium | `services/payments/deposits.py:278` | The deposit webhook handler looks up the payment by our_ref without filtering on direction, so it can change a withdrawal's status | Fixed (b07aedd) |
+| 71 | medium | `services/payments/deposits.py:278` | _apply_confirmed_status never checks direction='in' or the provider on the payments row it locks | Fixed (b07aedd) |
 | 72 | medium | `services/payments/deposits.py:567` | run_provider_reconciliation aborts the whole report on one failing fetch_status | Not yet verified |
 | 73 | medium | `services/payments/manual.py:79` | The manual (and automatic) daily deposit cap is checked and then inserted without a lock, so parallel requests exceed it | Not yet verified |
 | 74 | medium | `services/payments/payout_worker.py:403` | The payout loop retries a failing entry with no backoff, and that entry blocks every new payout | Not yet verified |
 | 75 | medium | `services/payments/telebirr_ingest.py:186` | evidence_hash is computed over the raw bytes, so a re-delivery of the same SMS with only formatting differences flips live evidence to 'disputed' | Not yet verified |
 | 76 | medium | `services/payments/telebirr_redemption.py:196` | Redeeming a 'rejected' evidence row hits an AssertionError instead of returning a code | Not yet verified |
 | 77 | medium | `services/payments/withdrawals.py:118` | Withdrawal amounts are not rounded to cents, which creates a cent per withdrawal and a ledger-versus-balance mismatch | Not yet verified |
-| 78 | medium | `services/payments/withdrawals.py:131` | Banned players can still withdraw, and small amounts auto-approve straight to Chapa | Not yet verified |
-| 79 | medium | `services/payments/withdrawals.py:151` | The chargeback window is measured from when the deposit was created, not when it was credited, so a player can easily get around it | Not yet verified |
+| 78 | medium | `services/payments/withdrawals.py:131` | Banned players can still withdraw, and small amounts auto-approve straight to Chapa | Fixed (f18bdda): banned or limited accounts go to review |
+| 79 | medium | `services/payments/withdrawals.py:151` | The chargeback window is measured from when the deposit was created, not when it was credited, so a player can easily get around it | Fixed (1b5c2cc) |
 | 80 | medium | `services/payments/withdrawals.py:250` | The 'withdrawals exceed deposits' review rule never fires for Chapa, because Chapa payouts never reach 'succeeded' | Not yet verified |
 | 81 | medium | `services/payments/withdrawals.py:312` | A Redis error after the withdrawal commits reports failure for a withdrawal that exists, and a retry creates a second one | Not yet verified |
 | 82 | low | `packages/core/bonuses.py:122` | Bonus grant, convert and expire ledger transactions are never counted in ledger_transactions_total | Not yet verified |
@@ -754,7 +754,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** low
 - **Where** `services/payments/deposits.py:278`
-- **Status** Not yet verified
+- **Status** Fixed (b07aedd)
 - **Trigger** _apply_confirmed_status selects the payments row by our_ref alone. If Chapa's signed webhook for a transfer event ever carries tx_ref equal to the withdrawal's our_ref (WD-...), unverified: a failed or cancelled status sets the withdrawal to 'failed' with no refund, and an amount mismatch sets it back to 'review'. A credit is blocked by the ledger's IdempotencyKeyConflict (the key our_ref already belongs to a 'withdrawal' transaction).
 - **Impact** A withdrawal set to 'failed' this way has its funds stuck in user_locked with no path back. A 'processing' payout that was already sent reappears in the admin approve/reject queue: approving it dispatches it again, and rejecting it refunds money that was already paid out.
 - **Suggested fix** Add AND direction = 'in' AND provider = $provider to the SELECT ... FOR UPDATE in _apply_confirmed_status, and return not_found otherwise.
@@ -763,7 +763,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** low
 - **Where** `services/payments/deposits.py:278`
-- **Status** Not yet verified
+- **Status** Fixed (b07aedd)
 - **Trigger** A correctly signed Chapa event whose tx_ref names a WD- payout row. The SELECT is only `WHERE our_ref = $1`. A 'failed'/'cancelled' status then runs UPDATE payments SET status='failed' on the withdrawal without the payout_worker _reverse ledger move. A 'succeeded' status is stopped only incidentally, by ledger.post raising IdempotencyKeyConflict against the withdrawal txn that owns key our_ref. poll_pending_deposits filters direction='in', but the webhook path does not.
 - **Impact** The player's withdrawal would be marked 'failed' while the amount stays in user_locked, and it would drop off the admin stuck-'processing' payout list, leaving the funds frozen. Whether Chapa ever sends tx_ref for transfer events is unverified.
 - **Suggested fix** Add `AND direction = 'in' AND provider = $2` to the FOR UPDATE select, passing provider_name, and return 'not_found' otherwise.
@@ -826,7 +826,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** low
 - **Where** `services/payments/withdrawals.py:131`
-- **Status** Not yet verified
+- **Status** Fixed (f18bdda): banned or limited accounts go to review
 - **Trigger** request_withdrawal reads kyc_level, created_at and is_simulated but never users.status. Deposits refuse banned users (deposits.py:122) and play is blocked, but a player banned for fraud can still call /api/withdraw, and an amount at or below 2000 ETB that passes the other checks goes straight to the payout stream.
 - **Impact** Funds of an account frozen for fraud, collusion or bonus abuse can leave the platform before anyone reviews it. Whether banned players should be allowed to cash out is a product decision, but they bypass review entirely.
 - **Suggested fix** If status is 'banned' (and possibly 'limited'), force review (add a failed_checks entry) rather than auto-approving, or reject, according to policy.
@@ -835,7 +835,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/withdrawals.py:151`
-- **Status** Not yet verified
+- **Status** Fixed (1b5c2cc)
 - **Trigger** The RecentReversibleDeposit check filters on payments.created_at. A Chapa deposit's created_at is the time the checkout was made, and a manual deposit's is the submission time. A player creates a Chapa checkout, waits 30 minutes, pays, is credited, and withdraws at once. Any manual deposit an admin approves more than 30 minutes after submission can also be withdrawn at once.
 - **Impact** Freshly credited money that could still be reversed can be withdrawn immediately, which is exactly what the rule exists to block.
 - **Suggested fix** Key the window on the time the deposit was credited, for example updated_at for status='succeeded' rows, a new succeeded_at column, or the created_at of the deposit's ledger transaction.

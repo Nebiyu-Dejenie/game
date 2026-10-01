@@ -207,6 +207,14 @@ is unaffected (`/healthz` 200, still `a7603c5`).
   counts a round in the ticket's own transaction), #50 (the circuit
   breaker demotes one tier per trip), #64 (hot-cold lookback bounded);
 - `fc4fd3b`, `d5c5703`: monitoring config (profile-gated, doesn't start).
+- payments fixes from the medium findings:
+  - `b07aedd`: a deposit webhook only touches an incoming payment from the
+    same provider; one naming a withdrawal used to fail it without a
+    refund (#70/#71).
+  - `f18bdda`: a withdrawal from a banned or limited account goes to review
+    instead of auto-approving (#78).
+  - `1b5c2cc`: the chargeback window starts at the credit, not at the
+    checkout (#79).
 - `2fefe43`: a Bingo number call waits out a Redis outage, and the round
   stops for recovery to refund if the engine lost the room meanwhile. This
   fixes a regression in #23 found by CI's chaos test.
@@ -287,6 +295,9 @@ g payout-worker services/payments/payout_worker.py   'payout_consumer_exited'
 g payout-worker services/payments/deposits.py        'deposit_poll_failed'
 g payments      services/payments/deposits.py        'event_id=f"{event.event_id}:{event.status}"'
 g payments      services/payments/withdrawals.py     'greatest(6, length(n::text))'
+g payments      services/payments/deposits.py        'mark that withdrawal failed without refunding it'
+g gateway       services/payments/withdrawals.py     '("banned", "limited")'
+g gateway       services/payments/withdrawals.py     'LEFT JOIN ledger_transactions lt ON lt.id = p.ledger_txn_id'
 g admin         services/admin/keno_queries.py       '_RESERVE_TRANSFER_LOCK_KEY = '
 g bot           services/bot/notification_relay.py   'DEAD_LETTER_STREAM = '
 g admin         web/admin/js/screens/keno/overview.js 'request_id: transferRequestId'
