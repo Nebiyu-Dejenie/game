@@ -866,7 +866,7 @@ async def test_same_user_two_different_winning_cards_both_paid(pool, redis, card
 
 
 async def test_claim_rejected_on_one_line_then_accepted_once_a_second_line_completes(
-    pool, redis, card_pool, conn
+    pool, redis, card_pool, conn, monkeypatch
 ):
     """The actual product rule, proved end to end against a real engine and
     a real draw (not a monkeypatched pattern check, unlike the tie/exception
@@ -892,6 +892,25 @@ async def test_claim_rejected_on_one_line_then_accepted_once_a_second_line_compl
     # is identical regardless of call speed, so widening the interval only
     # removes the false precision requirement, it doesn't weaken what's
     # actually verified.
+    #
+    # The draw is scripted (2026-10-01). With a random draw the test failed
+    # whenever card 1 never sat at exactly one line: one number can
+    # complete two lines at once. It timed out at wait_until(exactly_one_line)
+    # on GitHub CI, 2 of 3 runs. The order: card 1's row 0 (exactly one
+    # line), five numbers not on the card (one line for ~1.5 s, room for
+    # both claims below), then the rest of column 0 (a real second line),
+    # then everything else. The engine, its claim validation and the
+    # settlement are all real; only the order of the 75 numbers is chosen.
+    card_a = 1
+    grid_a = card_pool[card_a]
+    row_0 = [grid_a[0][c] for c in range(5)]
+    col_0_rest = [grid_a[r][0] for r in range(1, 5)]
+    on_card = {n for row in grid_a for n in row if n}
+    scripted = row_0 + [n for n in range(1, 76) if n not in on_card][:5] + col_0_rest
+    scripted += [n for n in range(1, 76) if n not in scripted]
+    assert sorted(scripted) == list(range(1, 76))
+    monkeypatch.setattr(round_engine.bingo, "derive_draw", lambda server_seed, client_seed: list(scripted))
+
     room_id = await create_room(conn, stake=Decimal("20.00"), min_players=2, call_interval_ms=300)
     room = await load_room_config(pool, room_id)
     engine = RoundEngine(pool, redis, room, card_pool)
@@ -899,14 +918,11 @@ async def test_claim_rejected_on_one_line_then_accepted_once_a_second_line_compl
     try:
         user_a = await create_funded_user(conn)
         user_b = await create_funded_user(conn)
-        card_a = 1
 
         assert (await engine.join(user_a, card_a, auto_mark=False)).ok
         assert (await engine.join(user_b, 2, auto_mark=False)).ok
 
         await wait_until(lambda: engine.status == "running", timeout=5)
-
-        grid_a = card_pool[card_a]
 
         def exactly_one_line() -> bool:
             called = engine._called  # noqa: SLF001
