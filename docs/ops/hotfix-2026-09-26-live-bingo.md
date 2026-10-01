@@ -420,3 +420,29 @@ stays at 1.
   - After the next Keno round opened: Tier 1, `max_round_exposure_pct`
     0.10, no promotion candidate. Per-round ceiling 3,000.00. Keno still
     off, allowlist on, no keno-worker errors.
+
+## Record: Telebirr SMS deposits off, 2026-10-01 09:13 UTC
+
+At the operator's instruction ("Disable Telebirr SMS deposits through the
+existing Admin Portal/provider-availability mechanism"), because of the
+forged-SMS hole (audit #9).
+
+- **How:** `services.admin.queries.set_payment_provider_availability_admin`
+  (the function behind the admin console's Provider availability toggle),
+  run in the admin container. Arguments: admin id 1, `telebirr_sms` /
+  `in`, enabled false, with the reason recorded.
+- **Result:**
+  - Deposit rails were `['manual', 'telebirr_sms']`, now `['manual']`.
+  - The `payment_provider_availability` row shows enabled false, updated
+    by admin 1.
+  - Audit row #8 records `payment_provider_availability.set`,
+    `{"enabled": true}` → `{"enabled": false}`.
+- **Backend enforcement checked:** the gateway and bot containers both
+  report `telebirr_sms` as not redeemable.
+  - The gateway's `POST /api/wallet/deposits/telebirr/redeem` answers 503
+    when it's off (`test_redeem_endpoint_is_disabled_by_default`).
+  - The bot's SMS-paste handler refuses before redeeming
+    (`test_pasting_an_sms_when_telebirr_sms_is_disabled_credits_nothing`).
+- **Re-enabling it** needs the evidence and redemption controls in
+  `docs/payments/telebirr-evidence-and-redemption-design.md` (at least
+  E1, E2 and R1) to ship first.

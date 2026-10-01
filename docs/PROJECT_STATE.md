@@ -73,7 +73,7 @@ Rules for editing it:
 | Production commit | `2aa504a`, alembic `b5d9e3a1c7f2`, deployed 2026-10-01 07:38 UTC; rollback image `jobingo:rollback-a7603c5` | [ops/hotfix-2026-09-26-live-bingo.md](ops/hotfix-2026-09-26-live-bingo.md) "Deploy record: Step 4" |
 | Bingo | **Live with real money** | same |
 | Keno | **Deployed but off** (`keno_enabled = false`), beta allowlist on, Tier 1. **Reserve 30,000.00** (funded 2026-10-01 08:12 UTC), so the per-round ceiling is 3,000.00 | runbook "Stage 1 reserve funding" |
-| Telebirr SMS deposits | **Still enabled** (`payment_provider_availability`: `true` since 2026-09-22, read 2026-10-01). The operator meant to switch them off on 2026-09-29 because of the forged-SMS hole (audit #9). See D0. | deploy pre-flight 2026-10-01 |
+| Telebirr SMS deposits | **Off since 2026-10-01 09:13 UTC**, switched off at the operator's instruction through the audited availability function (audit row #8). Both redemption paths, the gateway endpoint (503) and the bot's SMS paste, refuse it on the server. It stays off until the forged-SMS fix (#9) ships. | runbook "Telebirr SMS deposits off" |
 | Monitoring | **No Prometheus or Alertmanager in production.** No alert has ever fired there. Config is ready but not started (profile `monitoring`). | `deploy/docker-compose.prod.yml` |
 | Step 1 release | **Deployed 2026-10-01 07:38 UTC** (`2aa504a`); every post-deploy check passed, and there were no errors or restarts after 6 minutes | runbook "Deploy record: Step 4" |
 | Git | `origin` = `github.com/Nebiyu-Dejenie/game`, in sync with local `main` (pushed 2026-10-01). The server's checkout still points at the dead `igame` remote, so deploys travel as a git bundle. The repo has no self-hosted runner, so CD can't deploy. | `gh api .../actions/runners` |
@@ -135,7 +135,7 @@ Waiting on the operator, roughly in the order they unblock work.
 
 | # | Decision | Recommendation | Blocks |
 |---|---|---|---|
-| **D0** | **Telebirr SMS deposits are still enabled in production** (read 2026-10-01), with the forged-SMS hole (#9) | Switch them off now: admin console → Payments → Provider availability → Telebirr SMS deposits off | Player money safety |
+| ~~D0~~ | ~~Telebirr SMS deposits still enabled~~ | **Done 2026-10-01 09:13 UTC**: switched off at the operator's instruction | – |
 | D1 | A network path to the server (the dev PC is on another network) | Rejoin the server's LAN, or add Tailscale or Cloudflare Access SSH | Every deploy |
 | D2 | OK to push to `origin` (the auto-mode check blocked it) | Yes | The remote falling behind local work |
 | D3 | Alerting: an ops Telegram chat id, a token for a separate ops bot, a healthchecks.io URL | Provide all three | Monitoring |
@@ -306,7 +306,7 @@ Open items that matter most:
 | R2 | **No production alerting.** A dead worker, stuck round or ledger mismatch pages nobody. | Certain until fixed / high | Start the monitoring profile (D3) |
 | R3 | **Single server, local backups only.** Backups sit in `~/backups` on the same machine. | Low / critical | Off-box backups, VPS plan (D10) |
 | R4 | **Deploy path depends on the dev machine's LAN.** It was down from 2026-09-29 evening to 2026-10-01 06:45 UTC. | Recurring / blocks fixes | D1 |
-| R5 | **Telebirr SMS deposits still on** with the forgery hole (#9). | Exploitable now / high | D0 |
+| R5 | ~~Telebirr SMS deposits on with the forgery hole (#9).~~ Switched off 2026-10-01. Re-enabling needs the fixes in the Telebirr design first. | Closed while off | D9 |
 | R6 | **Simulated players in real pots, undisclosed.** | Legal | D11 |
 | R7 | **Secrets in git history** (`PHONE_ENCRYPTION_KEY`). | Low / high | D12 |
 | R8 | **App ports published on the server's LAN,** and the gateway trusts `CF-Connecting-IP` from anyone who can reach port 8000. | Low (LAN only) | Bind to the tunnel network only |
@@ -770,7 +770,7 @@ Deliberately not built, with the reason:
 
 In order. Each item says what it unblocks.
 
-1. ~~Deploy Step 1~~: done 2026-10-01 (`2aa504a`). **Switch Telebirr SMS deposits off** (D0).
+1. ~~Deploy Step 1~~: done 2026-10-01 (`2aa504a`). ~~Switch Telebirr SMS deposits off~~: done 09:13 UTC.
 2. **Keno Steps 2–3:** show the reserve transaction, then post and verify it after confirmation; then add the testers. The operator flips Step 4.
 3. **Start monitoring** (needs D3), then test-fire an alert end to end.
 4. **Fix correlated Keno exposure** (after D4), before Stage 2.
@@ -832,6 +832,7 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
+- **2026-10-01 09:13 UTC:** Telebirr SMS deposits switched off at the operator's instruction (D0). Done through the audited provider-availability function (audit row #8). The gateway and bot containers both report the rail as not redeemable.
 - **2026-10-01 (later still):** Keno Stage 1 reserve funded: 30,000.00 from house_float, after the operator confirmed the exact transaction. Verified (ledger transaction #4, audit row #7, reconcile OK, Tier 1, ceiling 3,000.00). Step 3 (testers) is next.
 - **2026-10-01 (later):** **Deployed the Step 1 release** (`2aa504a`, 07:38 UTC) through the runbook script. Every check passed; no errors or restarts after 6 minutes.
   - The pre-flight found Telebirr SMS deposits still enabled (new D0).
