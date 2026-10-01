@@ -446,3 +446,108 @@ forged-SMS hole (audit #9).
 - **Re-enabling it** needs the evidence and redemption controls in
   `docs/payments/telebirr-evidence-and-redemption-design.md` (at least
   E1, E2 and R1) to ship first.
+
+## Deploy record: release 2 (money integrity), 2026-10-01 12:24 UTC (`7fb013f`)
+
+Authorized under the operator's standing instruction of 2026-10-01: "You
+are authorized to deploy completed fixes through the existing runbook when
+they have passed the required verification."
+
+- **What shipped:** `2aa504a..7fb013f`. No migration; Dockerfile and
+  lockfile unchanged.
+  - `5f7b75b`, `7844d82` (#77): every money amount must be whole cents.
+    `ledger.post()` refuses anything else, and the gateway, bot, deposits,
+    withdrawals and admin money inputs reject it first. A 99.995
+    withdrawal used to leave the player a cent the ledger never recorded.
+  - `a31824d` (#69/#73): the daily deposit cap is checked one deposit at a
+    time per player, with the pending row in the same transaction.
+  - `fc82a5f` (#36/#67): a racing bonus grant can't put a second bonus on
+    one credit, and the bonus sweep survives a bad row.
+  - `ac047af` (#81): a Redis error after a withdrawal commits no longer
+    reports failure, so a retry can't make a second withdrawal.
+- **Verified before:**
+  - GitHub CI green in full on `7844d82` (main suite, chaos, browser
+    tests; the first fully green run); `7fb013f` adds only docs and the
+    tunnel template.
+  - Locally, the full suite with the ledger guard: 1,877 passed.
+- **Pre-flight:** 0 real players' cards in open rounds, 0 pending Keno
+  tickets, Telebirr SMS off, reconcile OK.
+- **Backup and rollback image:** backup
+  `~/backups/jobingo-20261001T122446Z.dump`; image tagged
+  `jobingo:rollback-2aa504a`; image `47c5d24b9e5c` built; all nine app
+  containers restarted.
+- **Verified after:**
+  - alembic `b5d9e3a1c7f2`; Keno off with the allowlist on; reserve
+    30,000.00.
+  - All 11 code checks found the fix in its container.
+  - `/healthz` 200, all nine containers up with 0 errors, Bingo and Keno
+    rounds cycling.
+  - Reconcile OK.
+
+The script (`/tmp/deploy6.sh`), the same shape as Step 4's with the new
+bundle, rollback tag and checks:
+```bash
+#!/usr/bin/env bash
+# Release 2 deploy: the money-integrity fixes (#77, #69/#73, #36/#67, #81).
+# 2aa504a -> 7fb013f. No migrations.
+set -euo pipefail
+cd ~/apps/igame
+C="docker compose -f deploy/docker-compose.prod.yml"
+U=$($C exec -T postgres printenv POSTGRES_USER </dev/null); D=$($C exec -T postgres printenv POSTGRES_DB </dev/null)
+Q() { $C exec -T postgres psql -U "$U" -d "$D" -At -c "$1" </dev/null; }
+APPS="gateway admin payments bot sms engine-worker payout-worker simulated-players-worker keno-worker"
+
+echo "== pre-flight"
+echo "at: $(git rev-parse --short HEAD)  alembic: $(Q 'SELECT version_num FROM alembic_version')"
+git fetch -q /tmp/release2.bundle main:deploy/main-release2
+echo "fetched $(git rev-parse --short deploy/main-release2)"
+git diff --stat HEAD deploy/main-release2 -- migrations | tail -1
+LIVE=$(Q "SELECT count(*) FROM rounds r JOIN round_entries e ON e.round_id = r.id JOIN users u ON u.id = e.user_id
+          WHERE r.status IN ('lobby','running','settling') AND NOT u.is_simulated")
+echo "real players' cards in open Bingo rounds: $LIVE"
+if [ "$LIVE" != "0" ]; then echo "ABORT: real players in an open round; retry between rounds"; exit 1; fi
+echo "open Keno tickets pending: $(Q "SELECT count(*) FROM keno_tickets WHERE status = 'pending'")"
+echo "Telebirr SMS deposits (expect f): $(Q "SELECT enabled FROM payment_provider_availability WHERE provider = 'telebirr_sms' AND direction = 'in'")"
+echo "reconcile before: $($C run --rm reconcile-job </dev/null 2>&1 | grep -o '"event": "[a-z_]*"' | tail -1)"
+
+echo "== backup and rollback image"
+COMPOSE_FILE=deploy/docker-compose.prod.yml POSTGRES_USER=$U BACKUP_DIR=$HOME/backups ./deploy/backup.sh "$D" </dev/null
+docker tag jobingo:latest jobingo:rollback-2aa504a
+BINGO_BEFORE=$(Q 'SELECT COALESCE(max(id), 0) FROM rounds'); KENO_BEFORE=$(Q 'SELECT COALESCE(max(id), 0) FROM keno_rounds')
+
+echo "== build and restart"
+git checkout -q --detach deploy/main-release2; echo "checked out $(git rev-parse --short HEAD)"
+docker build -q -t jobingo:latest . </dev/null >/dev/null; echo "built $(docker image inspect jobingo:latest --format '{{.Id}}' | cut -c8-19)"
+$C up -d --no-deps $APPS </dev/null 2>&1 | tail -3
+sleep 40
+
+echo "== verify"
+echo "alembic (expect b5d9e3a1c7f2): $(Q 'SELECT version_num FROM alembic_version')"
+echo "keno enabled|allowlist (expect f|t): $(Q "SELECT keno_enabled||'|'||beta_restricted FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1")"
+echo "keno reserve (expect 30000.00): $(Q "SELECT b.balance FROM accounts a JOIN account_balances b ON b.account_id = a.id WHERE a.user_id IS NULL AND a.kind = 'keno_reserve'")"
+g() { printf '%-15s %-50s %s\n' "$1" "$3" "$($C exec -T "$1" grep -c "$3" "$2" </dev/null || true)"; }
+g gateway       packages/core/ledger.py              'def is_whole_cents'
+g payments      packages/core/ledger.py              'ledger amounts must be whole cents'
+g gateway       services/payments/withdrawals.py     'class InvalidWithdrawalAmount'
+g gateway       services/payments/withdrawals.py     'withdrawal_enqueue_failed_sweep_will_retry'
+g gateway       services/payments/deposits.py        '_DEPOSIT_CAP_LOCK_NAMESPACE = 7301'
+g payments      services/payments/deposits.py        'class InvalidDepositAmount'
+g payments      packages/core/bonuses.py             'raced = await conn.fetchrow'
+g payout-worker services/payments/bonus_sweep.py     'bonus_sweep_row_failed'
+g admin         services/admin/app.py                'def _require_whole_cents'
+g bot           services/bot/handlers.py             'ledger.is_whole_cents(amount)'
+g engine-worker services/engine/round_engine.py      'async def _publish_call'
+echo "healthz: $(curl -s -o /dev/null -w '%{http_code}' https://arada.click/healthz)"
+$C ps --format '{{.Service}} {{.Status}}' </dev/null | grep -E "$(echo $APPS | tr ' ' '|')"
+for s in $APPS; do printf '%-26s errors in last 40s: %s\n' "$s" "$($C logs --since 40s $s </dev/null 2>&1 | grep -ciE 'traceback|exception|"level": "error"' || true)"; done
+echo "new rounds since restart: Bingo $(Q "SELECT count(*) FROM rounds WHERE id > $BINGO_BEFORE")  Keno $(Q "SELECT count(*) FROM keno_rounds WHERE id > $KENO_BEFORE")"
+echo "reconcile after: $($C run --rm reconcile-job </dev/null 2>&1 | grep -o '"event": "[a-z_]*"' | tail -1)"
+rm -f /tmp/release2.bundle
+```
+
+**Rollback:**
+```
+docker tag jobingo:rollback-2aa504a jobingo:latest
+docker compose -f deploy/docker-compose.prod.yml up -d --no-deps gateway admin payments bot sms engine-worker payout-worker simulated-players-worker keno-worker
+git checkout --detach 2aa504a
+```

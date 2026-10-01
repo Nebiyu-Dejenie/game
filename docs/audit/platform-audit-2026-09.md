@@ -44,7 +44,7 @@ the status column as items are verified or fixed.
 | 33 | high | `services/payments/telebirr_redemption.py:152` | Telebirr redemption trusts only knowledge of the reference; whoever submits it first gets another player's deposit | Confirmed; in the Telebirr design |
 | 34 | high | `services/payments/withdrawals.py:180` | Seven-digit reference numbers truncate to six digits, so consecutive payment refs collide once payment_ref_seq reaches 1,000,000 | Fixed (797fe74), deployed 2026-10-01 |
 | 35 | high | `services/payments/withdrawals.py:361` | sweep_stuck_approved_payouts re-enqueues payouts that are only waiting in the queue, not lost, and adds a new duplicate every tick | Fixed (c1e3077), deployed 2026-10-01 |
-| 36 | medium | `packages/core/bonuses.py:90` | Concurrent welcome-bonus grants create two bonuses rows backed by one ledger credit, which poisons the bonus sweep for all players | Fixed (fc82a5f), deploy pending |
+| 36 | medium | `packages/core/bonuses.py:90` | Concurrent welcome-bonus grants create two bonuses rows backed by one ledger credit, which poisons the bonus sweep for all players | Fixed (fc82a5f), deployed 2026-10-01 |
 | 37 | medium | `packages/core/keno_autoplay.py:210` | Autoplay places a ticket after the player pressed Stop: stale session snapshot and no status re-check in the placement transaction | Already fixed (verified): place_ticket re-checks the session under a row lock |
 | 38 | medium | `packages/core/keno_autoplay.py:221` | stop_on_loss / stop_on_win routinely overshoot by one round because round N+1's autoplay tickets are placed before round N's result is recorded | Fixed (939a29b, same as #17), deployed 2026-10-01 |
 | 39 | medium | `packages/core/keno_autoplay.py:231` | A round filled to capacity by other players' bets permanently stops everyone else's autoplay sessions | Confirmed; skipping vs stopping on a round-level rejection is the operator's decision |
@@ -75,21 +75,21 @@ the status column as items are verified or fixed.
 | 64 | medium | `services/gateway/app.py:657` | hot-cold endpoint's lookback_rounds is not clamped; one request can load all Keno history and block the gateway event loop | Fixed (f732569), deployed 2026-10-01 |
 | 65 | medium | `services/gateway/fanout.py:80` | When a ConnectionQueue overflows with a non-droppable message, queued round_end/balance_update messages are discarded without triggering a resync | Not yet verified |
 | 66 | medium | `services/payments/app.py:283` | payout_queue_depth uses XLEN on a stream that is never trimmed, so the depth alert is always on and cannot reveal a stalled consumer | Not yet verified |
-| 67 | medium | `services/payments/bonus_sweep.py:32` | The bonus sweep has no per-item isolation: one failing bonus, or a Redis publish error, aborts the rest of the tick for every other player | Fixed (fc82a5f), deploy pending |
+| 67 | medium | `services/payments/bonus_sweep.py:32` | The bonus sweep has no per-item isolation: one failing bonus, or a Redis publish error, aborts the rest of the tick for every other player | Fixed (fc82a5f), deployed 2026-10-01 |
 | 68 | medium | `services/payments/bonus_sweep.py:34` | The same wagering counts in full toward every active bonus a user holds at once | Not yet verified |
-| 69 | medium | `services/payments/deposits.py:151` | The daily deposit cap is check-then-act with no per-user lock; concurrent intents or redemptions exceed it | Fixed (a31824d), deploy pending |
+| 69 | medium | `services/payments/deposits.py:151` | The daily deposit cap is check-then-act with no per-user lock; concurrent intents or redemptions exceed it | Fixed (a31824d), deployed 2026-10-01 |
 | 70 | medium | `services/payments/deposits.py:278` | The deposit webhook handler looks up the payment by our_ref without filtering on direction, so it can change a withdrawal's status | Fixed (b07aedd), deployed 2026-10-01 |
 | 71 | medium | `services/payments/deposits.py:278` | _apply_confirmed_status never checks direction='in' or the provider on the payments row it locks | Fixed (b07aedd), deployed 2026-10-01 |
 | 72 | medium | `services/payments/deposits.py:567` | run_provider_reconciliation aborts the whole report on one failing fetch_status | Not yet verified |
-| 73 | medium | `services/payments/manual.py:79` | The manual (and automatic) daily deposit cap is checked and then inserted without a lock, so parallel requests exceed it | Fixed (a31824d), deploy pending |
+| 73 | medium | `services/payments/manual.py:79` | The manual (and automatic) daily deposit cap is checked and then inserted without a lock, so parallel requests exceed it | Fixed (a31824d), deployed 2026-10-01 |
 | 74 | medium | `services/payments/payout_worker.py:403` | The payout loop retries a failing entry with no backoff, and that entry blocks every new payout | Not yet verified |
 | 75 | medium | `services/payments/telebirr_ingest.py:186` | evidence_hash is computed over the raw bytes, so a re-delivery of the same SMS with only formatting differences flips live evidence to 'disputed' | Not yet verified |
 | 76 | medium | `services/payments/telebirr_redemption.py:196` | Redeeming a 'rejected' evidence row hits an AssertionError instead of returning a code | Not yet verified |
-| 77 | medium | `services/payments/withdrawals.py:118` | Withdrawal amounts are not rounded to cents, which creates a cent per withdrawal and a ledger-versus-balance mismatch | Not yet verified |
+| 77 | medium | `services/payments/withdrawals.py:118` | Withdrawal amounts are not rounded to cents, which creates a cent per withdrawal and a ledger-versus-balance mismatch | Fixed (5f7b75b, 7844d82), deployed 2026-10-01 |
 | 78 | medium | `services/payments/withdrawals.py:131` | Banned players can still withdraw, and small amounts auto-approve straight to Chapa | Fixed (f18bdda), deployed 2026-10-01: banned or limited accounts go to review |
 | 79 | medium | `services/payments/withdrawals.py:151` | The chargeback window is measured from when the deposit was created, not when it was credited, so a player can easily get around it | Fixed (1b5c2cc), deployed 2026-10-01 |
 | 80 | medium | `services/payments/withdrawals.py:250` | The 'withdrawals exceed deposits' review rule never fires for Chapa, because Chapa payouts never reach 'succeeded' | Not yet verified |
-| 81 | medium | `services/payments/withdrawals.py:312` | A Redis error after the withdrawal commits reports failure for a withdrawal that exists, and a retry creates a second one | Fixed (ac047af), deploy pending |
+| 81 | medium | `services/payments/withdrawals.py:312` | A Redis error after the withdrawal commits reports failure for a withdrawal that exists, and a retry creates a second one | Fixed (ac047af), deployed 2026-10-01 |
 | 82 | low | `packages/core/bonuses.py:122` | Bonus grant, convert and expire ledger transactions are never counted in ledger_transactions_total | Not yet verified |
 | 83 | low | `packages/core/campaigns.py:93` | Notification Center audiences include simulated players | Not yet verified |
 | 84 | low | `packages/core/keno_autoplay.py:146` | start_session surfaces expected races and validation errors as raw 500s | Not yet verified |
@@ -448,7 +448,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** medium
 - **Where** `packages/core/bonuses.py:90`
-- **Status** Fixed (fc82a5f), deploy pending
+- **Status** Fixed (fc82a5f), deployed 2026-10-01
 - **Trigger** Two deposit confirmations for one user overlap. Examples: approve_manual_deposit_admin (queries.py 2231) runs while the same user's Telebirr redemption or Chapa confirmation commits; or two admins approve two of that user's manual deposits. Both maybe_grant_welcome_bonus calls count grants_so_far=0 and use the same key welcome-{u}-{rule}-0. In T2, grant_bonus's pre-check SELECT runs before T1 commits. ledger.post then blocks on the unique key and returns T1's transaction as a replay. T2 then INSERTs a second bonuses row with the same grant_txn_id, since bonuses has no unique index on grant_txn_id. The referral path is saved by ux_bonuses_referral_once; welcome is not.
 - **Impact** Two 'active' bonuses exist but user_bonus holds one amount. Both clear wagering on the same tick. The second convert_bonus_to_cash raises InsufficientFunds, or, if the user holds another bonus, drains it. sweep_bonus_wagering has no per-row try/except, so every tick aborts at that row, and every active bonus after it in scan order, belonging to other players, never converts or expires.
 - **Suggested fix** Add UNIQUE(bonuses.grant_txn_id) (migration) and INSERT ... ON CONFLICT (grant_txn_id) DO NOTHING RETURNING, falling back to the existing row. Alternatively, take pg_advisory_xact_lock(user_id) at the top of maybe_grant_*. Separately, isolate each row in sweep_bonus_wagering.
@@ -727,7 +727,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/bonus_sweep.py:32`
-- **Status** Fixed (fc82a5f), deploy pending
+- **Status** Fixed (fc82a5f), deployed 2026-10-01
 - **Trigger** Inside the for-loop, any exception from wagering_progress_for_user_since, the progress UPDATE, convert_bonus_to_cash/expire_bonus (BonusNotFound, InsufficientFunds, a DB error or deadlock abort) or publish_balance_update propagates straight out. A concrete case: redis.publish raises during a Redis blip after a conversion has already committed. _run_periodic_sweep (payout_worker.py:434-446) only catches at the tick level, and the candidate query has no ORDER BY.
 - **Impact** Every bonus after the failing row is skipped for that tick. During a sustained Redis outage each tick commits at most one conversion or expiry and then aborts, so all players' conversions and expiries trickle through at one per minute. If a row ever fails the same way every time (e.g. a bonuses row whose amount exceeds user_bonus, which the schema does not prevent because grant_txn_id has no UNIQUE), the sweep never gets past it. Every player behind that row is stuck, with only a log line to show for it.
 - **Suggested fix** Wrap each row's processing in try/except Exception that logs the bonus_id and continues. Make the post-commit publish best-effort (its own try/except). Add ORDER BY id and a metric for per-row failures.
@@ -745,7 +745,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/deposits.py:151`
-- **Status** Fixed (a31824d), deploy pending
+- **Status** Fixed (a31824d), deployed 2026-10-01
 - **Trigger** Chapa: create_deposit_intent runs _check_deposit_eligibility on a bare pooled connection with no transaction (line 184), then INSERTs the pending row. Five concurrent taps pass the 5-token DEPOSIT bucket, all compute today_total before any of the INSERTs are visible, and all pass. Telebirr: redeem_evidence runs the same check after locking only its own evidence row, and before the ledger.post that serializes on provider_settlement. Two redemptions of different references by the same user, sent at the same moment (for example two bot pastes, since aiogram handles updates concurrently, or bot plus Mini App), both pass. The payments INSERT and credit then go through without the cap being checked again.
 - **Impact** A player's own responsible-gaming daily deposit cap, or the platform's daily_deposit_cap_etb, is bypassed by several times the remaining headroom. The overshoot is bounded by the rate-limit buckets and, for Telebirr, by how many real payments the player has.
 - **Suggested fix** Serialize the cap check per user. Take pg_advisory_xact_lock(<deposit-cap namespace>, user_id) as the first statement, and in create_deposit_intent run the check and the INSERT in one transaction. In redeem_evidence, take the same advisory lock before the SUM.
@@ -781,7 +781,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/manual.py:79`
-- **Status** Fixed (a31824d), deploy pending
+- **Status** Fixed (a31824d), deployed 2026-10-01
 - **Trigger** _check_deposit_eligibility (deposits.py:147-157) sums today's deposits without locking the user row or taking an advisory lock. Several /deposit manual submissions fired in parallel by the same player, up to the 5 per hour Redis rate limit, each read today_total before the others' INSERTs commit, so all pass the check and all insert. create_deposit_intent has the same race, and there it is not even inside a transaction.
 - **Impact** A player can go past the platform daily cap, or their own responsible-gaming deposit limit, by up to 5 times per hour. Admins then approve deposits that should never have been accepted.
 - **Suggested fix** At the start of the transaction in _check_deposit_eligibility, take SELECT ... FROM users WHERE id=$1 FOR NO KEY UPDATE (or pg_advisory_xact_lock on the user_id), and wrap create_deposit_intent's check and insert in a transaction too.
@@ -817,7 +817,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/withdrawals.py:118`
-- **Status** Not yet verified
+- **Status** Fixed (5f7b75b, 7844d82), deployed 2026-10-01
 - **Trigger** A player POSTs /api/withdraw with amount '99.995' while holding 100.00 cash. The gateway and bot only check amount > 0, and request_withdrawal never rounds. ledger.post's Python check passes (100.00 - 99.995 >= 0). ledger_entries.amount is numeric(18,2), so the entries are stored as -100.00 and +100.00. The account_balances UPDATE computes balance + (-99.995) = 0.005 and stores 0.01. Verified with a SELECT: cached cash 0.01, entry -100.00, locked 100.00.
 - **Impact** The player withdraws 100.00 (payments.amount is rounded to 100.00) and keeps 0.01 of cached cash that has no ledger entries behind it, repeatable on every withdrawal. Any player can at will open a gap between cached balances and the ledger, which sweep_ledger_reconciliation reports; the alert comments call ledger mismatches page-immediately.
 - **Suggested fix** Reject amounts that are not already at 2 decimal places (amount != amount.quantize(Decimal('0.01'))) in request_withdrawal and in the gateway and bot parsing. Ideally ledger.post should also assert that every entry amount has at most 2 decimal places.
@@ -853,7 +853,7 @@ Trigger, impact and suggested fix as the finder agents wrote them.
 
 - **Severity** medium, **fix size** small, **finder confidence** high
 - **Where** `services/payments/withdrawals.py:312`
-- **Status** Fixed (ac047af), deploy pending
+- **Status** Fixed (ac047af), deployed 2026-10-01
 - **Trigger** The transaction commits, then publish_balance_update (a pool.fetch and redis.publish) raises on a Redis blip. The exception reaches the gateway, which returns a 500, or cmd_withdraw, which has no generic handler and sends no reply. enqueue_payout is skipped; the sweep picks the row up after 60-120s. Neither /api/withdraw nor /withdraw takes an idempotency key.
 - **Impact** The player sees an error or nothing, although their cash is already locked and the payout will go out. A natural retry creates a second withdrawal and locks more cash. No money is created, but the player withdraws more than intended and is confused.
 - **Suggested fix** Wrap publish_balance_update and enqueue_payout in try/except after the commit (log, and let the sweep recover), and always return the intent. Optionally accept a client-supplied request id stored uniquely on payments.

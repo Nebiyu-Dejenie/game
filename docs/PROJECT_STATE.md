@@ -4,8 +4,8 @@ The one page to read first. It says where the project stands today, what's
 safe to change, what's waiting on whom, and where the detail lives. Every
 other document goes deeper on one topic; this one links to them.
 
-**Last updated:** 2026-10-01 · **Production:** `2aa504a` (deployed 2026-10-01 07:38 UTC, the Step 1 release) ·
-**Main:** a few commits ahead (fixes for the next deploy) ·
+**Last updated:** 2026-10-01 · **Production:** `7fb013f` (release 2, deployed 2026-10-01 12:24 UTC) ·
+**Main:** equal to production's code ·
 **Alembic head:** `b5d9e3a1c7f2` (production and main agree)
 
 ## Contents
@@ -70,7 +70,7 @@ Rules for editing it:
 | | State | Source |
 |---|---|---|
 | Brand / domain | Zemen Game at `arada.click` (Mini App, bot, admin, finance, agent portal, SMS) | [PRODUCTION_DOMAIN_AND_CLOUDFLARE.md](PRODUCTION_DOMAIN_AND_CLOUDFLARE.md), README |
-| Production commit | `2aa504a`, alembic `b5d9e3a1c7f2`, deployed 2026-10-01 07:38 UTC; rollback image `jobingo:rollback-a7603c5` | [ops/hotfix-2026-09-26-live-bingo.md](ops/hotfix-2026-09-26-live-bingo.md) "Deploy record: Step 4" |
+| Production commit | `7fb013f` (release 2: money integrity), alembic `b5d9e3a1c7f2`, deployed 2026-10-01 12:24 UTC; rollback image `jobingo:rollback-2aa504a` | [ops/hotfix-2026-09-26-live-bingo.md](ops/hotfix-2026-09-26-live-bingo.md) "Deploy record: release 2" |
 | Bingo | **Live with real money** | same |
 | Keno | **Deployed but off** (`keno_enabled = false`), beta allowlist on, Tier 1. **Reserve 30,000.00** (funded 2026-10-01 08:12 UTC), so the per-round ceiling is 3,000.00 | runbook "Stage 1 reserve funding" |
 | Telebirr SMS deposits | **Off since 2026-10-01 09:13 UTC**, switched off at the operator's instruction through the audited availability function (audit row #8). Both redemption paths, the gateway endpoint (503) and the bot's SMS paste, refuse it on the server. It stays off until the forged-SMS fix (#9) ships. | runbook "Telebirr SMS deposits off" |
@@ -832,6 +832,8 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
+- **2026-10-01 12:24 UTC:** **Release 2 deployed** (`7fb013f`): the fixes for #77 (whole cents), #69/#73 (deposit cap), #36/#67 (bonus race and sweep) and #81 (withdrawal retry). Every check passed and reconcile was OK before and after.
+  - SSH via `ssh.arada.click` is held back: the server accepts password logins (`Permission denied (publickey,password)`), so the DNS record stays unpublished until the operator turns them off (ops/ssh-access.md, step 2).
 - **2026-10-01 12:17 UTC:** Tunnel route `ssh.arada.click → ssh://172.17.0.1:22` added to the production tunnel config and the tunnel restarted (no player affected, every hostname verified). Inert until its DNS record is published; the operator's steps are in `ops/ssh-access.md`. Side finding: `/metrics` is publicly reachable on the tunnel hostnames.
 - **2026-10-01 09:13 UTC:** Telebirr SMS deposits switched off at the operator's instruction (D0). Done through the audited provider-availability function (audit row #8). The gateway and bot containers both report the rail as not redeemable.
 - **2026-10-01 (later still):** Keno Stage 1 reserve funded: 30,000.00 from house_float, after the operator confirmed the exact transaction. Verified (ledger transaction #4, audit row #7, reconcile OK, Tier 1, ceiling 3,000.00). Step 3 (testers) is next.
