@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from packages.core import keno_autoplay, keno_queries, keno_tickets, platform_settings, rate_limit, telegram_auth
+from packages.core import keno_autoplay, keno_queries, keno_tickets, ledger, platform_settings, rate_limit, telegram_auth
 from packages.core.config import get_settings
 from packages.core.db_pool import create_pool
 from packages.core.ledger import user_balance_snapshot
@@ -218,6 +218,7 @@ async def api_invite(authorization: str = Header(default="")) -> dict[str, Any]:
 # matching the bot's own choice not to expose raw internal error text.
 _DEPOSIT_ERROR_CODES: dict[type[Exception], str] = {
     deposits.DepositRateLimited: "rate_limited",
+    deposits.InvalidDepositAmount: "invalid_amount",
     deposits.BelowMinimumDeposit: "below_minimum",
     deposits.DailyDepositCapExceeded: "daily_cap_exceeded",
     deposits.DepositorSelfExcluded: "self_excluded",
@@ -225,6 +226,7 @@ _DEPOSIT_ERROR_CODES: dict[type[Exception], str] = {
     manual.UnknownManualDestination: "no_manual_destination",
 }
 _WITHDRAWAL_ERROR_CODES: dict[type[Exception], str] = {
+    withdrawals.InvalidWithdrawalAmount: "invalid_amount",
     withdrawals.BelowMinimumWithdrawal: "below_minimum",
     withdrawals.InsufficientAvailableBalance: "insufficient_balance",
     withdrawals.KycLevelTooLow: "kyc_required",
@@ -268,7 +270,7 @@ async def api_create_deposit(
         amount = Decimal(body.amount)
     except InvalidOperation:
         raise HTTPException(status_code=422, detail="invalid_amount") from None
-    if amount <= 0:
+    if not ledger.is_whole_cents(amount) or amount <= 0:
         raise HTTPException(status_code=422, detail="invalid_amount")
 
     phone = await queries.user_phone(app.state.pool, user_id)
@@ -320,7 +322,7 @@ async def api_create_manual_deposit(
         amount = Decimal(body.amount)
     except InvalidOperation:
         raise HTTPException(status_code=422, detail="invalid_amount") from None
-    if amount <= 0:
+    if not ledger.is_whole_cents(amount) or amount <= 0:
         raise HTTPException(status_code=422, detail="invalid_amount")
     if not body.external_reference.strip():
         raise HTTPException(status_code=422, detail="external_reference_required")
@@ -440,7 +442,7 @@ async def api_create_withdrawal(
         amount = Decimal(body.amount)
     except InvalidOperation:
         raise HTTPException(status_code=422, detail="invalid_amount") from None
-    if amount <= 0 or not body.account_ref.strip() or not body.holder_name.strip():
+    if not ledger.is_whole_cents(amount) or amount <= 0 or not body.account_ref.strip() or not body.holder_name.strip():
         raise HTTPException(status_code=422, detail="invalid_amount")
 
     provider = ManualProvider() if body.provider == "manual" else app.state.chapa

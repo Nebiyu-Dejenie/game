@@ -51,6 +51,10 @@ class BelowMinimumDeposit(DepositRejected):
     pass
 
 
+class InvalidDepositAmount(DepositRejected):
+    """Not a whole number of cents (or not a finite number)."""
+
+
 class DailyDepositCapExceeded(DepositRejected):
     pass
 
@@ -96,6 +100,8 @@ async def _check_deposit_rate_limit_and_minimum(
     # 5/hour") -- a cheap Redis round-trip gates every DB write and
     # provider call below it, the same rate-limit-first ordering
     # services/gateway/connection.py's own _run_action() uses.
+    if not ledger.is_whole_cents(amount):
+        raise InvalidDepositAmount(f"deposit amount {amount} is not a whole number of cents")
     if not await rate_limit.allow(redis, "deposit", str(user_id), **rate_limit.DEPOSIT):
         raise DepositRateLimited(f"user {user_id} exceeded the deposit rate limit")
 

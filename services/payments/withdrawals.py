@@ -55,6 +55,10 @@ class WithdrawalRejected(Exception):
     """
 
 
+class InvalidWithdrawalAmount(WithdrawalRejected):
+    """Not a whole number of cents (or not a finite number)."""
+
+
 class BelowMinimumWithdrawal(WithdrawalRejected):
     pass
 
@@ -120,6 +124,10 @@ async def request_withdrawal(
     with _tracer.start_as_current_span(
         "withdrawal.request", attributes={"user_id": user_id, "amount": str(amount)}
     ) as span:
+        # A fraction of a cent used to go through and leave the player a
+        # cent with no ledger entry behind it (platform audit, 2026-10-01).
+        if not ledger.is_whole_cents(amount):
+            raise InvalidWithdrawalAmount(f"amount {amount} is not a whole number of cents")
         if amount < min_withdraw:
             raise BelowMinimumWithdrawal(f"amount {amount} is below the minimum {min_withdraw}")
 

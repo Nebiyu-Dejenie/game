@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import asyncpg
 import asyncpg.pool
@@ -30,6 +30,19 @@ from packages.core import metrics
 AsyncpgConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 USER_BALANCE_KINDS = frozenset({"user_cash", "user_bonus", "user_locked"})
+
+
+CENT = Decimal("0.01")
+
+
+def is_whole_cents(amount: Decimal) -> bool:
+    """True for a finite amount with no fraction of a cent. Every amount a
+    player sends (deposits, withdrawals, limits) is checked with this, and
+    post() refuses any entry that fails it."""
+    try:
+        return amount.is_finite() and amount == amount.quantize(CENT)
+    except InvalidOperation:
+        return False
 
 
 class IdempotencyKeyConflict(Exception):
@@ -170,6 +183,14 @@ async def post(
     to prevent."""
     if not entries:
         raise ValueError("post() requires at least one entry")
+    # ledger_entries.amount is numeric(18,2), but the cached balance is
+    # computed from the amount as given. A fraction of a cent made them
+    # disagree: a withdrawal of 99.995 from 100.00 stored entries of -100.00
+    # and left a cached 0.01 with nothing behind it (platform audit,
+    # 2026-10-01). Callers reject such amounts first; this is the backstop.
+    for entry in entries:
+        if not is_whole_cents(entry.amount):
+            raise ValueError(f"ledger amounts must be whole cents, got {entry.amount}")
 
     # A second code review pass caught that the fix below (incrementing
     # only after the `async with` block exits, not inside it) is still

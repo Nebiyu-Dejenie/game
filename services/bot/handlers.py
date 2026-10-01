@@ -397,7 +397,7 @@ async def cmd_deposit(
         amount = Decimal(raw_amount)
     except InvalidOperation:
         amount = None
-    if amount is None or amount <= 0:
+    if amount is None or not ledger.is_whole_cents(amount) or amount <= 0:
         await notifier.send(message.chat.id, t("deposit.invalid_amount", language))
         return
 
@@ -482,7 +482,7 @@ async def cmd_withdraw(
         amount = Decimal(raw_amount)
     except InvalidOperation:
         amount = None
-    if amount is None or amount <= 0:
+    if amount is None or not ledger.is_whole_cents(amount) or amount <= 0:
         await notifier.send(message.chat.id, t("withdraw.invalid_amount", language))
         return
 

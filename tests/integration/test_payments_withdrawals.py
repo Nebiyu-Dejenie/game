@@ -254,6 +254,21 @@ async def test_a_redis_error_after_the_withdrawal_commits_still_returns_the_with
     assert await _locked(conn, user_id) == Decimal("100.00")
 
 
+async def test_an_amount_that_is_not_whole_cents_is_refused_and_creates_no_money(pool, redis, conn):
+    """Platform audit #77: nothing rounded or refused a withdrawal of
+    99.995. ledger_entries stores whole cents (-100.00, +100.00), but the
+    cached balance was computed as 100.00 - 99.995 = 0.005 and stored as
+    0.01. The player kept a cent with no ledger entry behind it, on every
+    withdrawal, and the ledger stopped reconciling."""
+    user_id = await create_funded_user(conn, Decimal("100.00"))
+
+    with pytest.raises(withdrawals.InvalidWithdrawalAmount):
+        await _request(pool, redis, conn, user_id, Decimal("99.995"))
+
+    assert await _cash(conn, user_id) == Decimal("100.00")
+    assert await ledger.reconcile(conn) == []
+
+
 async def test_request_withdrawal_pushes_a_live_balance_update(pool, redis, conn):
     # A code review pass caught that only services/payments/deposits.py
     # ever pushed a live balance_update -- requesting a withdrawal locks
