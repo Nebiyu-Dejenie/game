@@ -4,13 +4,23 @@ since a mocked disconnect wouldn't prove anything about how the real
 redis-py client and the real room-lock renewal loop behave under an actual
 severed connection.
 
-This restarts the shared docker-compose Redis container. It's reversible
-(the container comes back with an empty, ready instance -- Redis here is
-documented, deliberately, as holding no data anything depends on
-surviving: packages/core/redis_conn.py's own docstring says "if Redis is
-wiped, the platform must recover fully from Postgres"), scoped to this
-machine's own dev stack, and this test file exists specifically to
-exercise that guarantee for real.
+This restarts the shared docker-compose Redis container. It's reversible,
+scoped to this machine's own dev stack, and this test file exists to
+exercise the "recover from Postgres" guarantee for real
+(packages/core/redis_conn.py's docstring: "if Redis is wiped, the platform
+must recover fully from Postgres").
+
+Two outcomes are legitimate, and which one happens depends on how Redis
+comes back. The compose Redis keeps its data in a volume and saves on a
+graceful stop, so a quick restart usually brings the room lock back with
+it. The engine has paused its number calls during the outage
+(RoundEngine._publish_call), confirms it still owns the room, and finishes
+the round, which settles normally. That is the #23 fix (platform audit,
+2026-09-29): a Redis blip must not void a live round. If Redis comes back
+without the lock, the engine stops driving the round, and recovery voids
+and refunds it. Either way, the round must end, and no money may appear or
+disappear. That's what this test checks; it used to require the refund
+outcome only (GitHub CI, 2026-10-01).
 
 Marked chaos_infra, not load: it breaks the shared session-scoped `redis`
 fixture's underlying connection for every test that runs after it in the
@@ -105,12 +115,17 @@ async def test_redis_restart_mid_round_recovers_cleanly(pool, conn):
     restart_seconds = await _restart_redis_container()
     print(f"\n[chaos redis-restart] container restart took {restart_seconds:.1f}s")
 
-    # The engine's own connection is now broken (the container came back as
-    # a brand new process) -- it can no longer renew its room lock or serve
-    # commands. It should stop being the authority for this room, one way
-    # or another, within a bounded time -- not spin forever pretending it
-    # still owns a lock a fresh Redis has no memory of.
-    await wait_until(lambda: task.done() or not engine.is_lock_held(), timeout=30)
+    # Either the engine still owns the room (Redis came back with its data)
+    # and finishes the round, or it has lost the room and stops driving it.
+    # It must not hang in between.
+    deadline = asyncio.get_running_loop().time() + 45
+    while not task.done() and engine.is_lock_held():
+        status = await pool.fetchval("SELECT status FROM rounds WHERE id = $1", round_id)
+        if status in ("done", "voided"):
+            break
+        assert asyncio.get_running_loop().time() < deadline, f"round still {status!r} 45 s after the restart"
+        await asyncio.sleep(0.2)
+    await engine.stop()
 
     if not task.done():
         task.cancel()
@@ -133,9 +148,21 @@ async def test_redis_restart_mid_round_recovers_cleanly(pool, conn):
             f"round left in non-terminal status {row['status']!r} after Redis outage + recovery"
         )
 
+        balances = []
         for user_id in players:
             cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
-            assert await ledger.balance(conn, cash.id) == Decimal("100.00")
+            balances.append(await ledger.balance(conn, cash.id))
+        if row["status"] == "voided":
+            # Recovery refunded every stake.
+            assert balances == [Decimal("100.00")] * len(players)
+        else:
+            # It settled: every stake went into the pot and the winners'
+            # recorded shares came back out of it, nothing more or less.
+            won = await pool.fetchval(
+                "SELECT COALESCE(SUM(amount), 0) FROM round_winners WHERE round_id = $1", round_id
+            )
+            assert won > 0
+            assert sum(balances) == Decimal("100.00") * len(players) - Decimal("15.00") * len(players) + won
 
         mismatches = await ledger.reconcile(conn)
         assert mismatches == []
