@@ -334,9 +334,21 @@ async def request_withdrawal(
         # safely record this itself when called nested, which every real
         # call is.
         metrics.ledger_transactions_total.labels(kind=txn.kind).inc()
-        await ledger.publish_balance_update(pool, redis, user_id)
+        # The withdrawal exists from here on, so nothing after this may
+        # report it as failed. A Redis error here used to escape: the player
+        # got an error for a withdrawal that had locked their cash, and a
+        # natural retry made a second one (platform audit, 2026-10-01). An
+        # approved payout that never reached the queue is re-enqueued by
+        # sweep_stuck_approved_payouts().
+        try:
+            await ledger.publish_balance_update(pool, redis, user_id)
+        except Exception:
+            logger.warning("withdrawal_balance_push_failed", our_ref=our_ref, exc_info=True)
         if status == STATUS_APPROVED:
-            await enqueue_payout(redis, our_ref=our_ref, payment_id=payment_id)
+            try:
+                await enqueue_payout(redis, our_ref=our_ref, payment_id=payment_id)
+            except Exception:
+                logger.warning("withdrawal_enqueue_failed_sweep_will_retry", our_ref=our_ref, exc_info=True)
 
         return WithdrawalIntent(payment_id=payment_id, our_ref=our_ref, status=status)
 

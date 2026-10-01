@@ -227,6 +227,33 @@ async def test_a_self_excluded_player_can_still_withdraw_without_review(pool, re
     assert intent.status == withdrawals.STATUS_APPROVED
 
 
+async def test_a_redis_error_after_the_withdrawal_commits_still_returns_the_withdrawal(
+    pool, redis, conn, monkeypatch
+):
+    """Platform audit #81: the balance push and the payout enqueue run after
+    the withdrawal has committed, and a Redis error in either used to
+    escape. The player got a 500 (or, through the bot, no reply) for a
+    withdrawal that existed with their cash already locked, and a natural
+    retry created a second one. The withdrawal is now returned either way;
+    an approved payout that never reached the queue is picked up by
+    sweep_stuck_approved_payouts."""
+    from packages.core import ledger as core_ledger
+    import redis.exceptions
+
+    async def redis_down(*_args, **_kwargs):
+        raise redis.exceptions.ConnectionError("Connection closed by server.")
+
+    monkeypatch.setattr(core_ledger, "publish_balance_update", redis_down)
+    monkeypatch.setattr(withdrawals, "enqueue_payout", redis_down)
+    user_id = await create_funded_user(conn, Decimal("1000.00"))
+
+    intent = await _request(pool, redis, conn, user_id, Decimal("100.00"))
+
+    assert intent.status == withdrawals.STATUS_APPROVED
+    assert await conn.fetchval("SELECT count(*) FROM payments WHERE user_id = $1 AND direction = 'out'", user_id) == 1
+    assert await _locked(conn, user_id) == Decimal("100.00")
+
+
 async def test_request_withdrawal_pushes_a_live_balance_update(pool, redis, conn):
     # A code review pass caught that only services/payments/deposits.py
     # ever pushed a live balance_update -- requesting a withdrawal locks
