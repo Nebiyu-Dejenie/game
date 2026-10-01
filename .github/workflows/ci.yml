@@ -59,7 +59,7 @@ jobs:
       - name: Wait for Postgres
         run: |
           for i in $(seq 1 30); do
-            if docker exec jobingo-postgres-1 pg_isready -U jobingo -d jobingo; then
+            if docker compose -f deploy/docker-compose.yml exec -T postgres pg_isready -U jobingo -d jobingo; then
               exit 0
             fi
             sleep 1
@@ -129,7 +129,7 @@ jobs:
       - name: Wait for Postgres
         run: |
           for i in $(seq 1 30); do
-            if docker exec jobingo-postgres-1 pg_isready -U jobingo -d jobingo; then
+            if docker compose -f deploy/docker-compose.yml exec -T postgres pg_isready -U jobingo -d jobingo; then
               exit 0
             fi
             sleep 1
