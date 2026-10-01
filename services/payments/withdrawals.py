@@ -134,7 +134,7 @@ async def request_withdrawal(
                 # row for round_winners' foreign key, while this held this row
                 # and waited for user_cash (test_player_row_lock_order.py).
                 user = await conn.fetchrow(
-                    "SELECT kyc_level, created_at, is_simulated FROM users WHERE id = $1 FOR NO KEY UPDATE",
+                    "SELECT kyc_level, created_at, is_simulated, status FROM users WHERE id = $1 FOR NO KEY UPDATE",
                     user_id,
                 )
                 if user is None:
@@ -251,6 +251,15 @@ async def request_withdrawal(
                 # the exact same values auto_ok itself is computed from,
                 # not a second, separately-invented explanation.
                 failed_checks: list[str] = []
+                # An account an admin has banned or limited goes to review,
+                # whatever the amount: it used to auto-approve straight to
+                # Chapa at 2,000 ETB or less, so money held for a fraud or
+                # abuse review could leave before anyone looked (platform
+                # audit, 2026-10-01). Whether it may then be paid stays the
+                # reviewing admin's call. A self-exclusion is the player's
+                # own choice and doesn't hold up their money.
+                if user["status"] in ("banned", "limited"):
+                    failed_checks.append(f"account is {user['status']}")
                 if amount > auto_approve_limit:
                     failed_checks.append(f"amount {amount} exceeds auto-approve limit {auto_approve_limit}")
                 if account_age.total_seconds() <= min_account_age_hours * 3600:

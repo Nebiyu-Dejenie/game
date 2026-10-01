@@ -177,6 +177,31 @@ async def test_small_amount_auto_approved_and_enqueued(pool, redis, conn):
     assert await _locked(conn, user_id) == Decimal("100.00")
 
 
+@pytest.mark.parametrize("status", ["banned", "limited"])
+async def test_a_banned_or_limited_account_s_withdrawal_goes_to_review(pool, redis, conn, status):
+    """Platform audit #78: request_withdrawal never read users.status, so a
+    player an admin had banned or limited (for fraud, collusion, bonus
+    abuse) could withdraw up to the auto-approve limit straight to Chapa
+    before anyone reviewed the account. The admin who reviews it still
+    decides whether it's paid."""
+    user_id = await create_funded_user(conn, Decimal("1000.00"))
+    await conn.execute("UPDATE users SET status = $2 WHERE id = $1", user_id, status)
+
+    intent = await _request(pool, redis, conn, user_id, Decimal("100.00"))
+
+    row = await conn.fetchrow("SELECT status, review_reason FROM payments WHERE id = $1", intent.payment_id)
+    assert (intent.status, row["status"]) == (withdrawals.STATUS_REVIEW, "review")
+    assert f"account is {status}" in row["review_reason"]
+    assert await _locked(conn, user_id) == Decimal("100.00")
+
+
+async def test_a_self_excluded_player_can_still_withdraw_without_review(pool, redis, conn):
+    user_id = await create_funded_user(conn, Decimal("1000.00"))
+    await conn.execute("UPDATE users SET status = 'self_excluded' WHERE id = $1", user_id)
+    intent = await _request(pool, redis, conn, user_id, Decimal("100.00"))
+    assert intent.status == withdrawals.STATUS_APPROVED
+
+
 async def test_request_withdrawal_pushes_a_live_balance_update(pool, redis, conn):
     # A code review pass caught that only services/payments/deposits.py
     # ever pushed a live balance_update -- requesting a withdrawal locks
