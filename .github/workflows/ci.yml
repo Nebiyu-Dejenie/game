@@ -81,8 +81,14 @@ jobs:
         # real docker-compose redis service mid-test, which breaks every
         # session-scoped fixture built on it for the rest of the pytest
         # process, not just its own test (pyproject.toml's own marker
-        # docstring explains this in full).
-        run: pytest tests/ -m chaos_infra -v
+        # docstring explains this in full). The same goes for each chaos
+        # file against the others: one pytest process per file, or the
+        # second Redis-restart test errors at setup on the first one's
+        # broken connection.
+        run: |
+          for f in $(grep -l "pytest.mark.chaos_infra" tests/integration/*.py); do
+            pytest "$f" -m chaos_infra -v || exit 1
+          done
 
       - name: Install Playwright's Chromium
         run: playwright install --with-deps chromium
