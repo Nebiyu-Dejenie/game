@@ -394,7 +394,14 @@ async def test_place_ticket_rejects_when_round_exposure_cap_reached(pool: asyncp
         pct = Decimal("0.0001")
         ceiling = (balance * pct).quantize(Decimal("0.01"))
         big_stake = _min_stake_to_exceed_exposure(ceiling, pick_count=5, multipliers=_MULTIPLIERS_BY_PICK_COUNT[5])
-        await _seed_keno_round(conn, max_round_exposure_pct=pct, stake_options=[Decimal("10"), big_stake])
+        # A max win that doesn't bind: since Blocker 1 (5acecd5) the round's
+        # estimate is capped at the most its tickets could ever pay, and
+        # the default 800 sits below a ceiling this large, so the round
+        # could never fill.
+        await _seed_keno_round(
+            conn, max_round_exposure_pct=pct, stake_options=[Decimal("10"), big_stake],
+            max_win_per_ticket=big_stake * 1000,
+        )
         user_id = await create_funded_user(conn, big_stake * 2)
 
     with pytest.raises(keno_tickets.RoundCapacityReached):

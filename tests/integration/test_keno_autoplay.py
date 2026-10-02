@@ -129,6 +129,7 @@ async def test_start_session_rejects_rounds_total_over_the_ceiling(pool: asyncpg
 
 
 async def test_start_session_accepts_a_valid_multi_race_config(pool: asyncpg.Pool, conn: asyncpg.Connection) -> None:
+    await _seed_keno_round(conn)  # start_session reads the live config and tier
     user_id = await create_funded_user(conn, Decimal("1000.00"))
     session = await keno_autoplay.start_session(
         pool, user_id=user_id, picks=[1, 2, 3], stake=Decimal("10"), rounds_total=5
@@ -142,6 +143,7 @@ async def test_start_session_accepts_a_valid_multi_race_config(pool: asyncpg.Poo
 async def test_start_session_rejects_a_second_active_session_for_the_same_user(
     pool: asyncpg.Pool, conn: asyncpg.Connection
 ) -> None:
+    await _seed_keno_round(conn)  # start_session reads the live config and tier
     user_id = await create_funded_user(conn, Decimal("1000.00"))
     await keno_autoplay.start_session(pool, user_id=user_id, picks=[1], stake=Decimal("10"), rounds_total=5)
     with pytest.raises(keno_autoplay.AutoplaySessionAlreadyActive):
@@ -157,6 +159,7 @@ async def test_stop_session_is_an_idempotent_no_op_when_nothing_is_active(
 
 
 async def test_stop_session_stops_a_real_active_session(pool: asyncpg.Pool, conn: asyncpg.Connection) -> None:
+    await _seed_keno_round(conn)  # start_session reads the live config and tier
     user_id = await create_funded_user(conn, Decimal("1000.00"))
     await keno_autoplay.start_session(pool, user_id=user_id, picks=[1], stake=Decimal("10"), rounds_total=5)
     stopped = await keno_autoplay.stop_session(pool, user_id=user_id)
