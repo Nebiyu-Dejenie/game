@@ -116,6 +116,10 @@ export async function enter() {
 // wallet, a room). ---------------------------------------------------------
 
 subscribe((state) => {
+  if (state.user && state.user.balance != null) {
+    const node = el("keno-balance-amount");
+    if (node) node.textContent = `${state.user.balance} ETB`;
+  }
   const onKeno = state.screen === "keno";
   if (tg && tg.MainButton) {
     if (onKeno) updateMainButton();

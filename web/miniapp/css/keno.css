@@ -37,6 +37,20 @@
   color: var(--gold);
 }
 
+/* The player's cash, kept current by balance_update pushes (a stake, a
+   win, a refund) -- Keno had no balance on screen at all (2026-10-02). */
+.keno-balance-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  margin-right: 8px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
 .keno-status-row {
   display: flex;
   align-items: center;

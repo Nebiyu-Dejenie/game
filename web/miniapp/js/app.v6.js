@@ -1013,14 +1013,28 @@ async function fetchInviteSummary() {
 // backend's own docstring for why the two are indistinguishable on
 // purpose. Stays hidden on a network error too -- the safe default
 // when we can't tell either way.
+//
+// Re-checked each time the player comes back to the rooms screen, and it
+// hides the button again on a 503 (2026-10-02). Checked only at boot, a
+// player who had the app open when Keno was switched on never saw the
+// button, and one who had it open when Keno was switched off kept a button
+// into an empty board.
 async function checkKenoAvailability() {
   try {
     const response = await fetch("/api/keno/state", { headers: authHeader() });
     if (response.ok) el("open-keno-btn").classList.remove("hidden");
+    else if (response.status === 503) el("open-keno-btn").classList.add("hidden");
   } catch {
-    /* stays hidden -- see comment above */
+    /* unchanged -- see comment above */
   }
 }
+
+let kenoCheckScreen = getState().screen;
+subscribe((state) => {
+  const arrivedOnRooms = state.screen === "rooms" && kenoCheckScreen !== "rooms";
+  kenoCheckScreen = state.screen;
+  if (arrivedOnRooms && state.connection === "connected") checkKenoAvailability();
+});
 
 el("invite-btn").addEventListener("click", async () => {
   haptics.lightTap();

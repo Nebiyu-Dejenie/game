@@ -286,3 +286,53 @@ async def test_an_autoplay_rounds_result_shows_without_leaving_the_board(gateway
     finally:
         await keno_autoplay.stop_session(pool, user_id=user_id)
         await page.close()
+
+
+async def test_the_keno_screen_shows_the_balance_and_follows_a_stake(gateway_server, pool, redis, browser, conn):
+    page, errors, user_id, round_id = await _open_round_and_player(pool, conn, browser)
+    try:
+        await _enter_keno(page, gateway_server)
+        await page.wait_for_function(
+            "document.getElementById('keno-balance-amount').textContent === '1000.00 ETB'", timeout=10000
+        )
+        await _bet(page, pool, user_id, round_id, stake="10.00")
+        await page.wait_for_function(
+            "document.getElementById('keno-balance-amount').textContent === '990.00 ETB'", timeout=10000
+        )
+        assert errors == [], errors
+    finally:
+        await page.close()
+
+
+async def test_the_keno_button_follows_the_switch_without_a_restart(gateway_server, pool, redis, browser, conn):
+    """Availability was checked once at boot: a player with the app open
+    when Keno was switched on never saw the button, and one with it open
+    when Keno was switched off kept a button into an empty board."""
+    page, errors, _, _ = await _open_round_and_player(pool, conn, browser)
+    config_id = await conn.fetchval(
+        "SELECT id FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1"
+    )
+    try:
+        await conn.execute("UPDATE keno_configs SET keno_enabled = false WHERE id = $1", config_id)
+        http_base = gateway_server.replace("ws://", "http://").replace("/ws", "")
+        await page.goto(http_base + "/")
+        await page.wait_for_selector("#screen-rooms.active", timeout=10000)
+        await page.wait_for_timeout(1000)
+        assert await page.locator("#open-keno-btn.hidden").count() == 1
+
+        await conn.execute("UPDATE keno_configs SET keno_enabled = true WHERE id = $1", config_id)
+        await page.click("#open-wallet-btn")
+        await page.wait_for_selector("#screen-wallet.active", timeout=5000)
+        await page.click("#wallet-back-btn")
+        await page.wait_for_selector("#screen-rooms.active", timeout=5000)
+        await page.wait_for_selector("#open-keno-btn:not(.hidden)", timeout=5000)
+
+        await conn.execute("UPDATE keno_configs SET keno_enabled = false WHERE id = $1", config_id)
+        await page.click("#open-wallet-btn")
+        await page.wait_for_selector("#screen-wallet.active", timeout=5000)
+        await page.click("#wallet-back-btn")
+        await page.wait_for_selector("#open-keno-btn.hidden", state="attached", timeout=5000)
+        assert errors == [], errors
+    finally:
+        await conn.execute("UPDATE keno_configs SET keno_enabled = true WHERE id = $1", config_id)
+        await page.close()
