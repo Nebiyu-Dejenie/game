@@ -330,6 +330,11 @@ async def _place_ticket(
             pick_count = len(validated_picks)
             if pick_count > tier["max_pick_count"]:
                 raise PickCountNotAllowedAtTier(str(pick_count))
+            # The admin's configured pick range, not only the module's 1..10
+            # (validate_picks above): changing min/max picks used to limit
+            # only the Mini App (2026-10-02).
+            if not (config["min_picks"] <= pick_count <= config["max_picks"]):
+                raise InvalidPicks(f"{pick_count} picks; this game takes {config['min_picks']}-{config['max_picks']}")
             if stake not in set(tier["stake_options"]):
                 raise StakeNotAllowed(str(stake))
 

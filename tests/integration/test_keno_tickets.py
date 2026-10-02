@@ -584,3 +584,29 @@ async def test_a_round_stops_taking_identical_tickets_at_its_ceiling(pool: async
         except keno_tickets.RoundCapacityReached:
             break
     assert accepted == 124
+
+
+async def test_a_pick_count_outside_the_configured_range_is_refused(pool: asyncpg.Pool) -> None:
+    """The admin's min/max picks were enforced only by the Mini App;
+    place_ticket checked the module's 1..10 and the tier's maximum."""
+    async with pool.acquire() as conn:
+        await _seed_keno_round(conn)
+        await _fund_reserve(conn, Decimal("40000"))
+        await conn.execute(
+            "UPDATE keno_configs SET min_picks = 2 WHERE id = "
+            "(SELECT id FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1)"
+        )
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+
+    try:
+        with pytest.raises(keno_tickets.InvalidPicks):
+            await keno_tickets.place_ticket(
+                pool, redis=object(), user_id=user_id, picks=[7], stake=Decimal("10"),
+                idempotency_key=f"test-{uuid.uuid4()}",
+            )
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE keno_configs SET min_picks = 1 WHERE id = "
+                "(SELECT id FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1)"
+            )

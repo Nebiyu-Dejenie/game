@@ -463,3 +463,35 @@ async def test_a_session_with_room_under_its_stop_loss_keeps_playing_while_a_rou
     await keno_autoplay.place_for_active_sessions(pool, redis, round_id=round_2)
 
     assert await _session_ticket_rounds(pool, session.id) == [round_1, round_2]
+
+
+async def test_start_session_refuses_what_every_round_would_refuse(pool: asyncpg.Pool, conn: asyncpg.Connection) -> None:
+    """A session with a stake the tier doesn't offer, picks outside the
+    game's limits, malformed picks, or Keno switched off used to start and
+    then stop itself on its first ticket (or, for malformed picks, raise a
+    500 at the gateway)."""
+    await _seed_keno_round(conn)
+    user_id = await create_funded_user(conn, Decimal("1000.00"))
+
+    with pytest.raises(keno_autoplay.AutoplayStakeNotAllowed):
+        await keno_autoplay.start_session(pool, user_id=user_id, picks=[1], stake=Decimal("15"), rounds_total=3)
+    with pytest.raises(keno_autoplay.InvalidAutoplayConfig):
+        await keno_autoplay.start_session(pool, user_id=user_id, picks=[1, 1], stake=Decimal("10"), rounds_total=3)
+    with pytest.raises(keno_autoplay.InvalidAutoplayConfig):
+        await keno_autoplay.start_session(
+            pool, user_id=user_id, picks=list(range(1, 11)), stake=Decimal("10"), rounds_total=3
+        )
+
+    await conn.execute(
+        "UPDATE keno_configs SET keno_enabled = false WHERE id = "
+        "(SELECT id FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1)"
+    )
+    try:
+        with pytest.raises(keno_autoplay.AutoplayKenoUnavailable):
+            await keno_autoplay.start_session(pool, user_id=user_id, picks=[1], stake=Decimal("10"), rounds_total=3)
+        assert await keno_autoplay.active_session(pool, user_id=user_id) is None
+    finally:
+        await conn.execute(
+            "UPDATE keno_configs SET keno_enabled = true WHERE id = "
+            "(SELECT id FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1)"
+        )

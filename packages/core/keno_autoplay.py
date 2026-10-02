@@ -33,7 +33,7 @@ import asyncpg
 import structlog
 from redis.asyncio import Redis
 
-from packages.core import keno, keno_tickets, metrics, responsible_gaming
+from packages.core import keno, keno_config, keno_tickets, metrics, responsible_gaming
 
 logger = structlog.get_logger()
 
@@ -55,6 +55,16 @@ class AutoplaySessionAlreadyActive(AutoplayError):
 
 class InvalidAutoplayConfig(AutoplayError):
     code = "invalid_autoplay_config"
+
+
+class AutoplayStakeNotAllowed(AutoplayError):
+    code = "stake_not_allowed"
+
+
+class AutoplayKenoUnavailable(AutoplayError):
+    """Keno is switched off, or this player isn't on the beta allowlist."""
+
+    code = "keno_unavailable"
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -116,7 +126,11 @@ async def start_session(
     stop_on_win_amount: Decimal | None = None,
     stop_on_loss_amount: Decimal | None = None,
 ) -> AutoplaySession:
-    validated_picks = keno.validate_picks(picks)  # same picks validation place_ticket() itself uses
+    try:
+        validated_picks = keno.validate_picks(picks)  # same picks validation place_ticket() itself uses
+    except keno.KenoError as exc:
+        # Used to escape as a 500 from the gateway (2026-10-02).
+        raise InvalidAutoplayConfig(f"invalid picks: {exc}") from exc
     if stake <= 0:
         raise InvalidAutoplayConfig("stake must be positive")
     if rounds_total is not None and not (0 < rounds_total <= MAX_ROUNDS_TOTAL):
@@ -145,6 +159,19 @@ async def start_session(
             if block.blocked:
                 assert block.reason is not None
                 raise AutoplayBlockedByResponsibleGaming(block.reason)
+            # Everything place_ticket() would refuse on every round, checked
+            # now: a session with a disabled stake, a pick count outside the
+            # game's limits, or Keno off used to start and then stop itself
+            # on its first ticket (2026-10-02).
+            config = await keno_config.load_active_config(conn)
+            if not config["keno_enabled"] or not await keno_config.is_user_allowed_to_play(conn, user_id, config):
+                raise AutoplayKenoUnavailable(str(user_id))
+            tier = await keno_config.load_current_tier(conn)
+            if stake not in set(tier["stake_options"]):
+                raise AutoplayStakeNotAllowed(str(stake))
+            max_picks = min(config["max_picks"], tier["max_pick_count"])
+            if not (config["min_picks"] <= len(validated_picks) <= max_picks):
+                raise InvalidAutoplayConfig(f"picks must be between {config['min_picks']} and {max_picks}")
             if rounds_total is not None:
                 configured_cap = await conn.fetchval(
                     "SELECT max_autoplay_rounds FROM keno_configs WHERE effective_from <= now() "
