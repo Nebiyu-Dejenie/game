@@ -762,7 +762,12 @@ async def test_same_user_double_claim_race_settles_exactly_once(pool, redis, car
         oks = [r for r in results if r.ok]
         rejected = [r for r in results if not r.ok]
         assert len(oks) == 1, results
-        assert len(rejected) == 1 and rejected[0].reason == "already_claimed", results
+        # Which refusal the loser gets depends on timing: "already_claimed"
+        # if it checks while the winner's claim is in flight,
+        # "round_already_settled" if the winner's settlement committed
+        # first (CI run 36982357376). Either way it paid nothing; the
+        # winners and ledger checks below are the real invariant.
+        assert len(rejected) == 1 and rejected[0].reason in ("already_claimed", "round_already_settled"), results
 
         await wait_until(lambda: engine.status == "idle", timeout=5)
 
