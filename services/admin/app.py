@@ -1543,7 +1543,9 @@ class CreateKenoConfigRequest(BaseModel):
     jackpot_diversion_bps: int
     rtp_floor_bps: int = 7500
     rtp_ceiling_bps: int = 9700
-    keno_enabled: bool
+    # Carried forward when omitted; it can only repeat the current value.
+    # Switching Keno on or off is the kill switch's job.
+    keno_enabled: bool | None = None
     reason: str
 
 

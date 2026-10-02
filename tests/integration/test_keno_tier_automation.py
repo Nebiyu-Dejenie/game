@@ -206,8 +206,7 @@ async def test_circuit_breaker_is_a_noop_with_no_ticket_activity(pool, conn):
         admin_id=(await create_test_admin(pool, role="superadmin"))[0],
         round_cycle_seconds=45, betting_seconds=25, draw_seconds=12, result_seconds=8,
         min_picks=1, max_picks=6, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-        reason="circuit breaker test",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="circuit breaker test",
     )
     result = await keno_tier_automation.check_circuit_breaker(pool)
     assert result.changed is False
@@ -221,8 +220,7 @@ async def test_circuit_breaker_trips_when_actual_payouts_far_exceed_expected(poo
     config = await keno_queries.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=6, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-        reason="circuit breaker trip test",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="circuit breaker trip test",
     )
     paytable = await conn.fetchrow(
         "SELECT id FROM keno_paytables WHERE pick_count = 1 AND profile = 'low_variance' "
@@ -298,8 +296,7 @@ async def test_circuit_breaker_at_floor_tier_cannot_demote_further_but_does_not_
     config = await keno_queries.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=6, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-        reason="floor tier test",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="floor tier test",
     )
     paytable = await conn.fetchrow(
         "SELECT id FROM keno_paytables WHERE pick_count = 1 AND profile = 'low_variance' "
@@ -369,8 +366,7 @@ async def test_circuit_breaker_demotes_one_tier_per_trip_not_one_per_round(pool,
     config = await keno_queries.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=6, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-        reason="circuit breaker one-tier-per-trip test",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="circuit breaker one-tier-per-trip test",
     )
     paytable = await conn.fetchrow(
         "SELECT id FROM keno_paytables WHERE pick_count = 1 AND profile = 'low_variance' "

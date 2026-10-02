@@ -47,12 +47,13 @@ async def _close_any_dangling_betting_open_round(pool: asyncpg.Pool):
 
 async def _baseline_config(pool, admin_id: int, **overrides) -> dict:
     """A known active config to edit from, with the settings the old kill
-    switch used to drop set to non-default values."""
+    switch used to drop set to non-default values, and Keno switched on."""
+    if not (await admin_keno.get_active_config_admin(pool))["keno_enabled"]:
+        await admin_keno.set_keno_enabled_admin(pool, admin_id=admin_id, enabled=True, reason="tests start with Keno on")
     await admin_keno.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=10, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-        reason="baseline for config management tests",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="baseline for config management tests",
     )
     changes = {
         "reserve_withdrawal_floor": "50000.00",
@@ -96,8 +97,7 @@ async def test_full_create_carries_forward_columns_it_does_not_name(pool):
     created = await admin_keno.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=50, betting_seconds=30, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=10, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-        reason="full create after edits",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="full create after edits",
     )
     assert created["reserve_withdrawal_floor"] == Decimal("50000.00")
     assert created["beta_restricted"] is False
@@ -213,8 +213,7 @@ async def test_paytable_save_enforces_the_configured_band_not_the_constants(pool
         await admin_keno.create_config_admin(
             pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
             result_seconds=8, min_picks=1, max_picks=10, max_tickets_per_user_per_round=3,
-            per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-            reason="restore the default band",
+            per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="restore the default band",
         )
 
 

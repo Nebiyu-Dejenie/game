@@ -26,8 +26,7 @@ async def test_create_config_admin_is_insert_only_and_audited(pool):
     config = await keno_queries.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=5, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=False,
-        reason="test config",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="test config",
     )
     active = await keno_queries.get_active_config_admin(pool)
     assert active["id"] == config["id"]
@@ -36,8 +35,7 @@ async def test_create_config_admin_is_insert_only_and_audited(pool):
     config2 = await keno_queries.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=5, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=False,
-        reason="test config 2",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="test config 2",
     )
     assert config2["id"] != config["id"]
     configs = await keno_queries.list_configs_admin(pool)
@@ -51,8 +49,7 @@ async def test_create_config_requires_a_reason(pool):
         await keno_queries.create_config_admin(
             pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
             result_seconds=8, min_picks=1, max_picks=5, max_tickets_per_user_per_round=3,
-            per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=False,
-            reason="   ",
+            per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="   ",
         )
 
 
@@ -61,8 +58,7 @@ async def test_kill_switch_flips_enabled_and_preserves_every_other_setting(pool)
     original = await keno_queries.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=5, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-        reason="baseline",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="baseline",
     )
     flipped = await keno_queries.set_keno_enabled_admin(
         pool, admin_id=admin_id, enabled=False, reason="emergency stop"
@@ -147,8 +143,7 @@ async def test_dashboard_summary_separates_reserve_from_liability(pool, conn):
     await keno_queries.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=5, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=True,
-        reason="dashboard test",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="dashboard test",
     )
     reserve = await ledger.get_or_create_account(conn, None, "keno_reserve")
     house_float = await ledger.get_or_create_account(conn, None, "house_float")
@@ -184,7 +179,7 @@ async def test_creating_a_keno_config_requires_superadmin(admin_server, pool):
                 "round_cycle_seconds": 45, "betting_seconds": 25, "draw_seconds": 12,
                 "result_seconds": 8, "min_picks": 1, "max_picks": 5,
                 "max_tickets_per_user_per_round": 3, "per_user_round_capacity_share_bps": 2000,
-                "jackpot_diversion_bps": 150, "keno_enabled": False, "reason": "should be forbidden",
+                "jackpot_diversion_bps": 150, "reason": "should be forbidden",
             },
         )
     assert response.status_code == 403
@@ -192,6 +187,7 @@ async def test_creating_a_keno_config_requires_superadmin(admin_server, pool):
 
 async def test_creating_a_keno_config_succeeds_for_superadmin_over_http(admin_server, pool):
     headers = await _auth_headers(admin_server, pool, role="superadmin")
+    switch = (await keno_queries.get_active_config_admin(pool))["keno_enabled"]
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{admin_server}/keno/configs",
@@ -200,11 +196,23 @@ async def test_creating_a_keno_config_succeeds_for_superadmin_over_http(admin_se
                 "round_cycle_seconds": 45, "betting_seconds": 25, "draw_seconds": 12,
                 "result_seconds": 8, "min_picks": 1, "max_picks": 5,
                 "max_tickets_per_user_per_round": 3, "per_user_round_capacity_share_bps": 2000,
-                "jackpot_diversion_bps": 150, "keno_enabled": False, "reason": "http create test",
+                "jackpot_diversion_bps": 150, "reason": "http create test",
             },
         )
-    assert response.status_code == 200, response.text
-    assert response.json()["keno_enabled"] is False
+        assert response.status_code == 200, response.text
+        assert response.json()["keno_enabled"] is switch  # carried forward
+        # Switching Keno is the kill switch's job, not this route's.
+        flipped = await client.post(
+            f"{admin_server}/keno/configs",
+            headers=headers,
+            json={
+                "round_cycle_seconds": 45, "betting_seconds": 25, "draw_seconds": 12,
+                "result_seconds": 8, "min_picks": 1, "max_picks": 5,
+                "max_tickets_per_user_per_round": 3, "per_user_round_capacity_share_bps": 2000,
+                "jackpot_diversion_bps": 150, "keno_enabled": not switch, "reason": "http create test",
+            },
+        )
+    assert flipped.status_code == 422
 
 
 async def test_paytable_preview_endpoint_is_reachable_by_ops(admin_server, pool):
@@ -538,7 +546,7 @@ async def test_active_config_endpoint_returns_the_effective_config_not_the_newes
     active = await keno_queries.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12, result_seconds=8,
         min_picks=1, max_picks=5, max_tickets_per_user_per_round=3, per_user_round_capacity_share_bps=2000,
-        jackpot_diversion_bps=150, keno_enabled=False, reason="active config for this test",
+        jackpot_diversion_bps=150, reason="active config for this test",
     )
     # A newer row that isn't in effect yet must not be reported as active.
     await conn.execute(

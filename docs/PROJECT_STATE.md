@@ -4,8 +4,8 @@ The one page to read first. It says where the project stands today, what's
 safe to change, what's waiting on whom, and where the detail lives. Every
 other document goes deeper on one topic; this one links to them.
 
-**Last updated:** 2026-10-01 · **Production:** `7fb013f` (release 2, deployed 2026-10-01 12:24 UTC) ·
-**Main:** equal to production's code ·
+**Last updated:** 2026-10-02 · **Production:** `7fb013f` (release 2, deployed 2026-10-01 12:24 UTC) ·
+**Main:** ahead of production by the Keno end-to-end work (release 3 candidate, not deployed) ·
 **Alembic head:** `b5d9e3a1c7f2` (production and main agree)
 
 ## Contents
@@ -120,12 +120,13 @@ The operator's four steps. Status as of the header date.
 | 1 | Ship the Keno fixes and every verified audit fix, then deploy | **Done 2026-10-01** (`2aa504a`) |
 | 2 | Fund the prize reserve: 30,000.00 ETB, `house_float` → `keno_reserve` (`keno_reserve_deposit`) | **Done 2026-10-01 08:12 UTC**, after the operator confirmed. Ledger transaction #4, audit row #7; reserve 30,000.00, house_float −31,000.00, Tier 1, ceiling 3,000.00, reconcile OK |
 | 3 | Add internal testers to the beta allowlist | **Next.** Needs each tester's Telegram username or numeric id; they must have opened the bot once. Added with the audited allowlist function under admin id 1 |
-| 4 | Flip `keno_enabled` | **The operator does this themselves** |
+| 4 | Flip `keno_enabled` | The operator's 2026-10-02 directive authorizes it once implementation and verification show Keno is ready: release 3 deployed, then controlled testing through the allowlist (Step 3). Not before |
 
 What limits Keno at a 30,000 reserve (Tier 1, `max_round_exposure_pct` 10%, so
 the ceiling is 3,000): independent picks never approach the ceiling (net
-exposure peaks at 292 to 1,910). Identical picks aren't limited at all; see
-[Known Risks](#known-risks), R1.
+exposure peaks at 292 to 1,910). Identical picks were not limited in
+production (R1); main now counts their correlation exactly and stops a round
+at its ceiling (5acecd5, deploys with release 3).
 
 ---
 
@@ -139,17 +140,20 @@ Waiting on the operator, roughly in the order they unblock work.
 | D1 | A network path to the server that doesn't depend on the dev PC being on its LAN | **In progress: `ssh.arada.click` through the existing tunnel, behind Cloudflare Access** ([ops/ssh-access.md](ops/ssh-access.md)). The tunnel route is in place; the operator checks sshd and UFW (step 2) and creates the Access app (step 3); then the DNS record goes live | Every deploy |
 | D2 | OK to push to `origin` (the auto-mode check blocked it) | Yes | The remote falling behind local work |
 | D3 | Alerting: an ops Telegram chat id, a token for a separate ops bot, a healthchecks.io URL | Provide all three | Monitoring |
-| D4 | Identical-picks exposure fix (it changes the risk model) | Approve before any opening wider than a few testers | Keno Stage 2 |
+| ~~D4~~ | ~~Identical-picks exposure fix~~ | **Done on main 2026-10-02** (5acecd5) under the operator's directive to finish Keno: exact pairwise covariance, and the estimate capped at the most the round could pay. Deploys with release 3 | – |
 | D5 | #25: per-IP Keno ticket limit shared behind carrier NAT | Remove it, or raise it well above the per-player 20/min (e.g. 300/min) | Fair ticket limits |
 | D6 | #57: two 5/5 jackpot winners in one round | Equal split per ticket, leftover cent stays in the pool | Jackpot correctness |
 | D7 | #39: a full round stops everyone else's autoplay | Skip that round instead of stopping (this reverses a 2026-09-25 rule) | Autoplay UX |
 | D8 | #30: abandoned Chapa checkouts never expire | Needs Chapa's expiry behaviour first | Deposit cap accuracy |
-| D9 | Telebirr redemption design | Read it and approve controls E1, E2 and R1 before re-enabling the rail | Telebirr |
+| D9 | Telebirr redemption design | Read it and approve controls E1, E2 and R1 before re-enabling the rail. The 2026-10-02 agent-portal audit adds two inputs: a payment agent can type evidence for any amount (the "received" check is name-only) that any player can then redeem, and an agent can mark another agent's or the phone's evidence `disputed`. Both are dormant while the rail is off | Telebirr |
 | D10 | VPS migration and off-box backups | Decide sizing and provider | Disaster recovery |
 | D11 | Simulated players share real pots and aren't disclosed | Legal review | Compliance |
 | D12 | `PHONE_ENCRYPTION_KEY` in git history (LB-D3) | Rotate the key, or rewrite history | Security |
 | D13 | `house_float` −1,000.00 from transaction #1 | Explain or correct it with a reversing entry | Clean books |
 | D14 | **Who funds the jackpot slice when a Keno ticket is refunded?** See the trace below | Decide A or B; until then A (today's behaviour) stays, pinned by a test | Accurate jackpot accounting |
+| D15 | Must a Keno config keep RTP ceiling + jackpot diversion under 100%? Today an admin can set 97% + 10%, which pays players about 107% of stakes. Production runs 82% + 1.5%, so it's latent | Yes: refuse a config or paytable that crosses it (strict xfail `test_a_config_whose_rtp_ceiling_plus_jackpot_diversion_reaches_100_percent_is_refused`) | Admin safety |
+| D16 | Does `max_autoplay_rounds` also limit an autoplay session started with no round count ("no limit" plus a stop-on-win/loss amount)? Today it doesn't | Yes: hold such sessions to the maximum (strict xfail `test_an_autoplay_session_with_no_round_count_is_held_to_the_configured_maximum`) | Autoplay limits |
+| D17 | The jackpot's cap, seed and trigger: `cap_amount` is stored and ignored (a hit pays the whole pool), `seed_amount` and the overflow pool are never read, the trigger is hard-coded to 5 of 5 on a 5-spot, and no admin screen edits any of them | Say what the cap and seed should do (e.g. pay up to the cap, keep the rest; reseed from the reserve or not at all); then they get built, validated and audited | Jackpot correctness |
 
 **D14, traced on 2026-10-01.** Nothing has been changed; the code's comments now
 describe it accurately.
@@ -262,8 +266,8 @@ The major milestones. Details in git and the linked docs.
 
 | Work | State | Next action |
 |---|---|---|
-| Step 1 release | **Deployed 2026-10-01** (`2aa504a`) | Watch production; the next deploy carries #81 and later fixes |
-| Keno launch Steps 2–4 | Waiting on Step 1 | See [Keno Launch Plan](#keno-launch-plan) |
+| Keno end to end (operator directive, 2026-10-02) | On main, tested, not deployed: correlated exposure (5acecd5); configured pick limits and autoplay pre-checks (2cc6cc1); refunds announced to the player (7504024); Keno in wallet history and refunds labelled (1636889); balance push after a stake (ec8a855); no early draw numbers, 503 when unconfigured (501f823); ticket resync after reconnect, reload or background, and autoplay results (673bc36); balance on the Keno screen and a live Keno button (3395a30); admin config integrity ("Admin Keno config writes can no longer…") | Push, green CI, release 3 through the runbook, then Step 3 testers |
+| Keno launch Steps 3–4 | Reserve funded (Step 2). Step 3 needs tester identities from the operator | See [Keno Launch Plan](#keno-launch-plan) |
 | Audit medium/low verification | 66 not yet verified | Money paths first; see [Recommended Next Work](#recommended-next-work) |
 | Lock-order sweep | Done for Keno and payments; admin, bot and gateway still to do | |
 
@@ -295,6 +299,9 @@ Open items that matter most:
 - **#41 / #55 (partly):** the stop-loss is safe, because it's enforced from tickets at placement. After a hard crash, `stop_on_win` and the session summary can still miss one round's result.
 - **Not yet in the audit:**
   - A Keno refund pays the full stake from `keno_reserve`, and the 1.5% jackpot slice stays in the pool. The player is made whole; the reserve funds the slice. Traced, documented and pinned by a test; the rule is decision D14.
+  - **Admin Keno config (2026-10-02 audit), fixed on main, deploy pending:** a negative paytable multiplier passed the RTP guardrail (real RTP far above it); NaN or Infinity gave a 500; a rules edit waiting behind the kill switch could switch Keno back on; `POST /keno/configs` could flip `keno_enabled` outside the audited kill switch; editing an old tier version silently reverted newer edits; a config change applied to the round already taking bets. Policy questions from it are D15–D17.
+  - **Admin Keno config, open:** a low `max_win_per_ticket` can push a paytable's real RTP below the floor (the guardrail ignores the cap); config, paytable and tier creates audit `before` as empty; `round_cycle_seconds` is stored but never read by the engine; `min_reserve` isn't checked to rise with the tier number.
+  - **Agent portal (2026-10-02 audit):** isolation holds. Every agent route scopes by the session's agent and takes no ids. Open and low: no rate limit on login or link minting; reactivating an agent revives sessions issued before the deactivation; the portal page builds rows with `innerHTML` (safe only because the fields are constrained); `/portal` has no private-chat filter. The forged-evidence findings are under D9.
 
 ---
 
@@ -770,10 +777,10 @@ Deliberately not built, with the reason:
 
 In order. Each item says what it unblocks.
 
-1. ~~Deploy Step 1~~: done 2026-10-01 (`2aa504a`). ~~Switch Telebirr SMS deposits off~~: done 09:13 UTC.
-2. **Keno Steps 2–3:** show the reserve transaction, then post and verify it after confirmation; then add the testers. The operator flips Step 4.
-3. **Start monitoring** (needs D3), then test-fire an alert end to end.
-4. **Fix correlated Keno exposure** (after D4), before Stage 2.
+1. ~~Deploy Step 1~~: done 2026-10-01 (`2aa504a`). ~~Switch Telebirr SMS deposits off~~: done 09:13 UTC. ~~Fund the reserve~~: done.
+2. **Release 3:** push, green CI, deploy the Keno end-to-end work through the runbook.
+3. **Keno Step 3, then Step 4:** controlled testing with allowlisted testers (needs their identities), then enable Keno once verified.
+4. **Start monitoring** (needs D3), then test-fire an alert end to end.
 5. **Verify the remaining medium and low findings, money paths first:**
    - #69 and #73: the deposit cap race.
    - #70 and #71: the webhook doesn't check direction.
@@ -832,6 +839,7 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
+- **2026-10-02:** Keno end-to-end work on main under the operator's directive to finish Keno (nothing deployed): correlated exposure (D4 done), server-side pick limits, refund notices, Keno in wallet history, a balance push after a stake, no early draw numbers, ticket resync, the balance on the Keno screen, and admin config integrity fixes. Admin and agent-portal audits recorded under Known Bugs. New decisions D15–D17; the agent-portal evidence findings added to D9.
 - **2026-10-01 12:24 UTC:** **Release 2 deployed** (`7fb013f`): the fixes for #77 (whole cents), #69/#73 (deposit cap), #36/#67 (bonus race and sweep) and #81 (withdrawal retry). Every check passed and reconcile was OK before and after.
   - SSH via `ssh.arada.click` is held back: the server accepts password logins (`Permission denied (publickey,password)`), so the DNS record stays unpublished until the operator turns them off (ops/ssh-access.md, step 2).
 - **2026-10-01 12:17 UTC:** Tunnel route `ssh.arada.click → ssh://172.17.0.1:22` added to the production tunnel config and the tunnel restarted (no player affected, every hostname verified). Inert until its DNS record is published; the operator's steps are in `ops/ssh-access.md`. Side finding: `/metrics` is publicly reachable on the tunnel hostnames.

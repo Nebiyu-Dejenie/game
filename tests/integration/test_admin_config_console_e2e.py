@@ -113,8 +113,7 @@ async def test_keno_rules_and_stake_editor(admin_server, pool, browser):
     await admin_keno.create_config_admin(
         pool, admin_id=admin_id, round_cycle_seconds=45, betting_seconds=25, draw_seconds=12,
         result_seconds=8, min_picks=1, max_picks=10, max_tickets_per_user_per_round=3,
-        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, keno_enabled=False,
-        reason="known config for the browser test",
+        per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="known config for the browser test",
     )
     tier = await admin_keno.create_tier_admin(
         pool, admin_id=admin_id, tier_number=1, min_reserve=Decimal("0"), max_pick_count=5,

@@ -333,6 +333,14 @@ async def _place_ticket(
             if round_row["status"] != "betting_open":
                 raise RoundNotAcceptingBets()
             round_id = round_row["id"]
+            # The game's rules for this ticket are the ones the round was
+            # opened with: a config change takes effect from the next
+            # round, as the admin console says. It used to apply mid-round
+            # (2026-10-02). keno_enabled and the allowlist above stay live,
+            # so the kill switch still stops tickets at once.
+            round_config = await conn.fetchrow("SELECT * FROM keno_configs WHERE id = $1", round_row["config_id"])
+            if round_config is None:
+                round_config = config
 
             tier = await conn.fetchrow("SELECT * FROM keno_risk_tiers WHERE id = $1", round_row["tier_id"])
             if tier is None:
@@ -343,7 +351,7 @@ async def _place_ticket(
             # The admin's configured pick range, not only the module's 1..10
             # (validate_picks above): changing min/max picks used to limit
             # only the Mini App (2026-10-02).
-            if not (config["min_picks"] <= pick_count <= config["max_picks"]):
+            if not (round_config["min_picks"] <= pick_count <= round_config["max_picks"]):
                 raise InvalidPicks(f"{pick_count} picks; this game takes {config['min_picks']}-{config['max_picks']}")
             if stake not in set(tier["stake_options"]):
                 raise StakeNotAllowed(str(stake))
@@ -358,7 +366,7 @@ async def _place_ticket(
             existing_tickets_count = await conn.fetchval(
                 "SELECT count(*) FROM keno_tickets WHERE round_id = $1 AND user_id = $2", round_id, user_id
             )
-            if existing_tickets_count >= config["max_tickets_per_user_per_round"]:
+            if existing_tickets_count >= round_config["max_tickets_per_user_per_round"]:
                 raise TooManyTicketsThisRound(str(existing_tickets_count))
 
             reserve_balance = await _keno_reserve_balance(conn)
@@ -411,7 +419,7 @@ async def _place_ticket(
                 new_ticket_stake=stake,
                 reserve_balance=reserve_balance,
                 max_round_exposure_pct=tier["max_round_exposure_pct"],
-                jackpot_diversion_bps=config["jackpot_diversion_bps"],
+                jackpot_diversion_bps=round_config["jackpot_diversion_bps"],
                 max_possible_payout=max_possible_payout,
             )
             if not exposure_check.allowed:
@@ -439,7 +447,7 @@ async def _place_ticket(
                 user_payout_variance_this_round=Decimal(user_accumulators["variance"]),
                 new_ticket=ticket_risk,
                 round_exposure_ceiling=exposure_check.ceiling,
-                max_share_bps=config["per_user_round_capacity_share_bps"],
+                max_share_bps=round_config["per_user_round_capacity_share_bps"],
             ):
                 raise UserRoundShareExceeded(str(stake))
 
@@ -453,7 +461,7 @@ async def _place_ticket(
             jackpot_account = await ledger.get_or_create_account(conn, None, "keno_jackpot_pool")
             cash_account = await ledger.get_or_create_account(conn, user_id, "user_cash")
 
-            jackpot_cut = (stake * Decimal(config["jackpot_diversion_bps"]) / Decimal(10000)).quantize(Decimal("0.01"))
+            jackpot_cut = (stake * Decimal(round_config["jackpot_diversion_bps"]) / Decimal(10000)).quantize(Decimal("0.01"))
             reserve_cut = stake - jackpot_cut
 
             try:

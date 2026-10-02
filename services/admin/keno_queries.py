@@ -257,10 +257,26 @@ async def rtp_band(conn: ledger.AsyncpgConnection) -> tuple[Decimal, Decimal]:
     return Decimal(row["rtp_floor_bps"]) / 10000, Decimal(row["rtp_ceiling_bps"]) / 10000
 
 
-async def _base_config(conn: ledger.AsyncpgConnection) -> dict[str, Any]:
-    row = await conn.fetchrow(
-        "SELECT * FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1"
+async def _lock_configs(conn: ledger.AsyncpgConnection) -> None:
+    """Every config write takes this before it reads the config it builds
+    on. Reading first let a write that waited here (behind the kill
+    switch, say) insert a version built on the config from before that
+    switch, turning Keno back on (2026-10-02)."""
+    await conn.execute("LOCK TABLE keno_configs IN SHARE ROW EXCLUSIVE MODE")
+
+
+async def _active_config_for_write(conn: ledger.AsyncpgConnection) -> asyncpg.Record | None:
+    """The config in effect right now, read after _lock_configs. Uses
+    clock_timestamp(), not now(): now() is this transaction's start, so a
+    write that waited on the lock would not see a version committed while
+    it waited."""
+    return await conn.fetchrow(
+        "SELECT * FROM keno_configs WHERE effective_from <= clock_timestamp() ORDER BY effective_from DESC LIMIT 1"
     )
+
+
+async def _base_config(conn: ledger.AsyncpgConnection) -> dict[str, Any]:
+    row = await _active_config_for_write(conn)
     if row is None:
         return dict(_FIRST_CONFIG_DEFAULTS)
     return {k: v for k, v in dict(row).items() if k not in _CONFIG_IDENTITY_COLUMNS}
@@ -275,7 +291,9 @@ async def _insert_config_version(
 ) -> asyncpg.Record:
     # Serialize concurrent writers so two admins can't both compute the
     # same next version number (the table has no unique constraint on it).
-    await conn.execute("LOCK TABLE keno_configs IN SHARE ROW EXCLUSIVE MODE")
+    # Callers have normally taken it already (_lock_configs); taking it
+    # again in the same transaction is a no-op.
+    await _lock_configs(conn)
     version = await conn.fetchval("SELECT COALESCE(MAX(version), 0) + 1 FROM keno_configs")
     columns = list(values)
     for column in columns:
@@ -286,7 +304,7 @@ async def _insert_config_version(
     row = await conn.fetchrow(
         f"""
         INSERT INTO keno_configs ({", ".join(columns)}, version, created_by_admin_id, effective_from)
-        VALUES ({placeholders}, ${n + 1}, ${n + 2}, COALESCE(${n + 3}, now()))
+        VALUES ({placeholders}, ${n + 1}, ${n + 2}, COALESCE(${n + 3}, clock_timestamp()))
         RETURNING *
         """,
         *[values[c] for c in columns], version, admin_id, effective_from,
@@ -310,18 +328,29 @@ async def create_config_admin(
     jackpot_diversion_bps: int,
     rtp_floor_bps: int = 7500,
     rtp_ceiling_bps: int = 9700,
-    keno_enabled: bool,
+    keno_enabled: bool | None = None,
     reason: str,
     effective_from: Any = None,
     ip_address: str | None = None,
 ) -> dict[str, Any]:
     """Full-config create (POST /keno/configs). Every column it doesn't
-    name is carried forward from the active config rather than reset."""
+    name is carried forward from the active config rather than reset.
+
+    keno_enabled is carried forward too. It may be named only to repeat
+    the current value: switching Keno on or off goes through the kill
+    switch, which is audited as such (2026-10-02). The very first config
+    on a deployment sets it."""
     if not reason.strip():
         raise InvalidKenoConfig("reason is required")
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await _lock_configs(conn)
+            first_config = await conn.fetchval("SELECT NOT EXISTS (SELECT 1 FROM keno_configs)")
             values = await _base_config(conn)
+            if keno_enabled is None:
+                keno_enabled = bool(values["keno_enabled"])
+            elif not first_config and keno_enabled != values["keno_enabled"]:
+                raise InvalidKenoConfig("Keno is switched on and off with the kill switch, not here")
             values.update(
                 round_cycle_seconds=round_cycle_seconds, betting_seconds=betting_seconds,
                 draw_seconds=draw_seconds, result_seconds=result_seconds, min_picks=min_picks,
@@ -361,6 +390,7 @@ async def update_config_admin(
     coerced = {field: _coerce_config_value(field, value) for field, value in changes.items()}
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await _lock_configs(conn)
             current = await _base_config(conn)
             merged = {**current, **coerced}
             merged["round_cycle_seconds"] = (
@@ -394,7 +424,10 @@ async def set_keno_enabled_admin(
         raise InvalidKenoConfig("reason is required")
     async with pool.acquire() as conn:
         async with conn.transaction():
-            current = await keno_config.load_active_config(conn)
+            await _lock_configs(conn)
+            current = await _active_config_for_write(conn)
+            if current is None:
+                raise InvalidKenoConfig("Keno has no config yet; create one first")
             values = {k: v for k, v in dict(current).items() if k not in _CONFIG_IDENTITY_COLUMNS}
             values["keno_enabled"] = enabled
             row = await _insert_config_version(conn, values=values, admin_id=admin_id)
@@ -523,10 +556,21 @@ async def create_paytable_admin(
     if profile not in ("low_variance", "standard"):
         raise InvalidKenoConfig(f"unknown profile: {profile!r}")
 
+    if not 1 <= pick_count <= keno.MAX_PICKS:
+        raise InvalidKenoConfig(f"pick count must be between 1 and {keno.MAX_PICKS}")
     try:
         decimal_multipliers = {int(k): Decimal(v) for k, v in multipliers.items()}
     except (ValueError, InvalidOperation) as exc:
         raise InvalidKenoConfig("multipliers must map match counts to numbers") from exc
+    # A negative multiplier lowers the computed RTP but is never paid
+    # (settlement pays only positive amounts), so it let a paytable through
+    # the guardrail with a real RTP far above it. NaN and Infinity crashed
+    # the stats below (2026-10-02).
+    for matches, multiplier in decimal_multipliers.items():
+        if not 0 <= matches <= pick_count:
+            raise InvalidKenoConfig(f"{matches} matches isn't possible with {pick_count} picks")
+        if not multiplier.is_finite() or multiplier < 0:
+            raise InvalidKenoConfig(f"the multiplier for {matches} matches must be a number of 0 or more")
     stats = keno.compute_paytable_stats(pick_count, decimal_multipliers)
 
     async with pool.acquire() as conn:
@@ -820,9 +864,21 @@ async def update_tier_admin(
         raise InvalidKenoConfig(f"these tier settings can't be changed here: {', '.join(unknown)}")
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await conn.execute("LOCK TABLE keno_risk_tiers IN SHARE ROW EXCLUSIVE MODE")
             base = await conn.fetchrow("SELECT * FROM keno_risk_tiers WHERE id = $1", tier_id)
             if base is None:
                 raise InvalidKenoConfig(f"no such tier: {tier_id}")
+            # An edit copies its base forward, so editing an old version
+            # silently reverted every newer change, and the audit diff
+            # (taken against that old base) didn't show it (2026-10-02).
+            newest = await conn.fetchval(
+                "SELECT id FROM keno_risk_tiers WHERE tier_number = $1 ORDER BY version DESC LIMIT 1",
+                base["tier_number"],
+            )
+            if newest != tier_id:
+                raise InvalidKenoConfig(
+                    f"tier {base['tier_number']} has a newer version (id {newest}); edit that one"
+                )
             base_values = _normalize_tier_values(dict(base))
             merged = _normalize_tier_values({**base_values, **changes})
             diff = [k for k in EDITABLE_TIER_FIELDS if merged[k] != base_values[k]]
