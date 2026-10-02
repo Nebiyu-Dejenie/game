@@ -81,7 +81,11 @@ async def test_superadmin_registers_revokes_reactivates_and_rotates_a_device_ove
 
     # --- reactivate ------------------------------------------------------
     await page.click(f'tr[data-device-pk="{device_pk}"] .toggle-status-btn')
-    await page.wait_for_selector("#toast.visible", timeout=5000)
+    # The revoke's toast can still be showing, so waiting for a visible
+    # toast could read the database before the reactivation landed (it
+    # did on CI run 36983593567). Wait for the re-rendered row instead,
+    # as the revoke step above does.
+    await page.wait_for_selector(f'tr[data-device-pk="{device_pk}"][data-status="active"]', timeout=5000)
 
     status = await conn.fetchval("SELECT status FROM ingestion_devices WHERE id = $1", device_pk)
     assert status == "active"
