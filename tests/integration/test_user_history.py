@@ -57,10 +57,17 @@ async def test_history_lists_keno_rounds_and_refunds(pool: asyncpg.Pool) -> None
         refunded = await _keno_round(conn, "failed")
         await _ticket(conn, refunded, user_id, stake="10.00", status="refunded", settled_offset_s=-10)
         # Not finished for this player yet: no history row until it is.
-        open_round = await _keno_round(conn, "betting_open")
+        # betting_closed, not betting_open: a leftover open round would be
+        # the one later tests (and engines) find and bet into.
+        open_round = await _keno_round(conn, "betting_closed")
         await _ticket(conn, open_round, user_id, stake="10.00", status="pending")
 
-    history = await queries.user_history(pool, user_id)
+    try:
+        history = await queries.user_history(pool, user_id)
+    finally:
+        # Never leave an unsettled round behind for a recovering engine.
+        await pool.execute("DELETE FROM keno_tickets WHERE round_id = $1", open_round)
+        await pool.execute("UPDATE keno_rounds SET status = 'voided' WHERE id = $1", open_round)
 
     keno_rows = {h["round_id"]: h for h in history if h["game"] == "keno"}
     assert set(keno_rows) == {won, lost, refunded}
