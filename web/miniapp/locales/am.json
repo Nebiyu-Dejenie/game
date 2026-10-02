@@ -80,6 +80,8 @@
   "wallet.history_round": "ዙር #{seq} — {stake} ብር",
   "wallet.history_won": "{amount} ብር አሸንፈዋል",
   "wallet.history_lost": "አላሸነፉም",
+  "wallet.history_refunded": "{amount} ብር ተመላሽ ሆኗል",
+  "wallet.history_keno_round": "ኬኖ #{seq} — {stake} ብር",
   "wallet.amount_placeholder": "መጠን (ብር)",
   "wallet.telebirr_placeholder": "የቴሌብር ቁጥር",
   "wallet.holder_name_placeholder": "ሙሉ ስም",

@@ -165,9 +165,13 @@ async def user_history(pool: asyncpg.Pool, user_id: int, limit: int = 10) -> lis
     # app.v6.js's own round_end fix (a player who won on two of their own
     # cards in one round shows one round with the combined amount, not
     # two rows).
+    # Keno rounds are listed too (2026-10-02): before, a player's Keno play
+    # never showed in their history at all. A refund (a voided Bingo round,
+    # which only refunds.refund_round() sets, or a failed Keno round) is
+    # flagged as such instead of reading as "No win".
     rows = await pool.fetch(
         """
-        SELECT rd.id, rd.seq, rd.stake, rd.ended_at,
+        SELECT rd.id, rd.seq, rd.stake, rd.ended_at, rd.status = 'voided' AS refunded,
                count(rw.round_id) > 0 AS won,
                sum(rw.amount) AS won_amount
         FROM round_entries re
@@ -182,17 +186,56 @@ async def user_history(pool: asyncpg.Pool, user_id: int, limit: int = 10) -> lis
         user_id,
         limit,
     )
-    return [
+    # One row per Keno round, once every ticket the player had in it is
+    # settled or refunded; the stake and the winnings (jackpot included)
+    # are the player's totals across their tickets in that round.
+    keno_rows = await pool.fetch(
+        """
+        SELECT kr.id, kr.seq, sum(t.stake) AS stake, max(t.settled_at) AS ended_at,
+               bool_and(t.status = 'refunded') AS refunded,
+               sum(COALESCE(t.payout, 0) + COALESCE(t.jackpot_payout, 0)) AS won_amount
+        FROM keno_tickets t
+        JOIN keno_rounds kr ON kr.id = t.round_id
+        WHERE t.user_id = $1
+        GROUP BY kr.id, kr.seq
+        HAVING bool_and(t.status <> 'pending')
+        ORDER BY max(t.settled_at) DESC NULLS LAST
+        LIMIT $2
+        """,
+        user_id,
+        limit,
+    )
+    history = [
         {
+            "game": "bingo",
             "round_id": row["id"],
             "seq": row["seq"],
             "stake": str(row["stake"]),
-            "ended_at": row["ended_at"].isoformat() if row["ended_at"] else None,
+            "ended_at": row["ended_at"],
             "won": row["won"],
             "won_amount": str(row["won_amount"]) if row["won_amount"] is not None else None,
+            "refunded": row["refunded"] and not row["won"],
         }
         for row in rows
+    ] + [
+        {
+            "game": "keno",
+            "round_id": row["id"],
+            "seq": row["seq"],
+            "stake": str(row["stake"]),
+            "ended_at": row["ended_at"],
+            "won": row["won_amount"] > 0,
+            "won_amount": str(row["won_amount"]) if row["won_amount"] > 0 else None,
+            "refunded": row["refunded"],
+        }
+        for row in keno_rows
     ]
+    # Newest first across both games; a row with no end time sorts last,
+    # as the SQL above orders it.
+    history.sort(key=lambda h: (h["ended_at"] is not None, h["ended_at"] or 0), reverse=True)
+    for entry in history[:limit]:
+        entry["ended_at"] = entry["ended_at"].isoformat() if entry["ended_at"] else None
+    return history[:limit]
 
 
 async def list_rooms(pool: asyncpg.Pool) -> list[dict[str, Any]]:

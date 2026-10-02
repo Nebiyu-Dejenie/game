@@ -80,6 +80,8 @@
   "wallet.history_round": "Round #{seq} — {stake} ETB",
   "wallet.history_won": "Won {amount} ETB",
   "wallet.history_lost": "No win",
+  "wallet.history_refunded": "Refunded {amount} ETB",
+  "wallet.history_keno_round": "Keno #{seq} — {stake} ETB",
   "wallet.amount_placeholder": "Amount (ETB)",
   "wallet.telebirr_placeholder": "Telebirr number",
   "wallet.holder_name_placeholder": "Full name",

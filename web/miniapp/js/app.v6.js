@@ -2052,7 +2052,7 @@ function renderHistory() {
   }
   const filtered = historyRows.filter((row) => {
     if (historyFilter === "won") return row.won;
-    if (historyFilter === "lost") return !row.won;
+    if (historyFilter === "lost") return !row.won && !row.refunded;
     return true;
   });
   if (filtered.length === 0) {
@@ -2067,12 +2067,17 @@ function renderHistory() {
     line.className = row.won ? "history-row won" : "history-row";
     const outcome = row.won
       ? t("wallet.history_won", { amount: row.won_amount })
-      : t("wallet.history_lost");
+      : row.refunded
+        ? t("wallet.history_refunded", { amount: row.stake })
+        : t("wallet.history_lost");
     const dot = document.createElement("span");
     dot.className = "history-dot";
     const roundLabel = document.createElement("span");
     roundLabel.className = "history-main";
-    roundLabel.textContent = t("wallet.history_round", { seq: row.seq, stake: row.stake });
+    roundLabel.textContent = t(row.game === "keno" ? "wallet.history_keno_round" : "wallet.history_round", {
+      seq: row.seq,
+      stake: row.stake,
+    });
     const outcomeLabel = document.createElement("span");
     outcomeLabel.className = "history-meta";
     outcomeLabel.textContent = outcome;
