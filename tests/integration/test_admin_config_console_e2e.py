@@ -115,6 +115,9 @@ async def test_keno_rules_and_stake_editor(admin_server, pool, browser):
         result_seconds=8, min_picks=1, max_picks=10, max_tickets_per_user_per_round=3,
         per_user_round_capacity_share_bps=2000, jackpot_diversion_bps=150, reason="known config for the browser test",
     )
+    # Keno off, set the only way it can be now: the kill switch.
+    if (await admin_keno.get_active_config_admin(pool))["keno_enabled"]:
+        await admin_keno.set_keno_enabled_admin(pool, admin_id=admin_id, enabled=False, reason="known state for the test")
     tier = await admin_keno.create_tier_admin(
         pool, admin_id=admin_id, tier_number=1, min_reserve=Decimal("0"), max_pick_count=5,
         max_top_multiplier=Decimal("100000"), stake_options=[Decimal("10"), Decimal("20"), Decimal("50")],
