@@ -753,6 +753,25 @@ class KenoRoundEngine:
                 await self._record_event(conn, round_id, None, "failed", reason=reason)
         metrics.keno_rounds_failed_total.inc()
         _publish(self._redis, {"t": "keno.round.completed", "round_id": round_id, "status": "failed", "reason": reason})
+        # Each player is told their ticket was refunded, and gets their new
+        # balance, once the refund has committed. Refunds used to be
+        # silent: the Mini App kept the ticket "pending", then showed it as
+        # lost (2026-10-02). Best-effort: the money has already moved.
+        for ticket in tickets:
+            try:
+                _publish_private(
+                    self._redis,
+                    ticket["user_id"],
+                    {
+                        "t": "keno.ticket.refunded",
+                        "round_id": round_id,
+                        "ticket_id": ticket["id"],
+                        "stake": str(ticket["stake"]),
+                    },
+                )
+                await ledger.publish_balance_update(self._pool, self._redis, ticket["user_id"])
+            except Exception:
+                logger.exception("keno_ticket_refunded_publish_failed", round_id=round_id, ticket_id=ticket["id"])
 
     async def _refund_one_ticket(self, conn: ledger.AsyncpgConnection, *, round_id: int, ticket: asyncpg.Record) -> None:
         stake = Decimal(ticket["stake"])
@@ -792,6 +811,10 @@ class KenoRoundEngine:
             self._worker_id,
             reason,
         )
+
+
+def _publish_private(redis: Redis, user_id: int, message: dict[str, object]) -> None:
+    asyncio.ensure_future(redis.publish(f"user:{user_id}", json.dumps(message, default=str)))
 
 
 def _publish_private_ticket_settled(

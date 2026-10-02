@@ -225,7 +225,10 @@ function renderPicksAndPayout() {
 
   const best = selectedPicks.size > 0 ? bestMultiplierFor(selectedPicks.size) : null;
   const stake = selectedStake ? Number(selectedStake) : 0;
-  const potential = best && stake > 0 ? stake * best.multiplier : 0;
+  // Capped at the tier's max win per ticket, as settlement pays it: an
+  // uncapped figure overstated big wins (2026-10-02).
+  const cap = currentRound && currentRound.max_win_per_ticket ? Number(currentRound.max_win_per_ticket) : Infinity;
+  const potential = best && stake > 0 ? Math.min(stake * best.multiplier, cap) : 0;
   el("keno-payout-amount").textContent = `${potential.toFixed(2)} ETB`;
 
   renderMatchPaysRows();
@@ -378,6 +381,7 @@ const ERROR_KEYS = new Set([
   // packages/core/responsible_gaming.py's own PlayBlock.reason values,
   // now checked on every Keno bet too (2026-09-21).
   "self_excluded", "banned", "cooling_off", "loss_limit_reached",
+  "keno_not_on_allowlist", "invalid_idempotency_key",
 ]);
 
 function setPlayStatus(key, kind) {
@@ -449,12 +453,7 @@ function renderMyTickets() {
     row.className = "keno-ticket-row";
     if (ticket.status === "won") row.classList.add("won");
     const picksText = ticket.picks.join(", ");
-    const statusText =
-      ticket.status === "pending"
-        ? t("keno.ticket_pending")
-        : ticket.status === "won"
-          ? t("keno.ticket_won", { amount: ticket.payout })
-          : t("keno.ticket_lost");
+    const statusText = ticketStatusText(ticket);
     row.innerHTML = `<span class="keno-ticket-picks">${picksText}</span><span>${statusText}</span>`;
     list.appendChild(row);
   }
@@ -471,6 +470,7 @@ function renderMyTickets() {
 
 const AUTOPLAY_START_ERROR_KEYS = new Set([
   "autoplay_session_already_active", "invalid_autoplay_config", "invalid_stake",
+  "stake_not_allowed", "keno_unavailable",
   "invalid_stop_on_win_amount", "invalid_stop_on_loss_amount",
   // keno_autoplay.start_session() refuses up front when the player's own
   // responsible-gaming status would refuse the first ticket.
@@ -929,9 +929,55 @@ ws.on("keno.ticket.settled", (msg) => {
   }
 });
 
+function ticketStatusText(ticket) {
+  if (ticket.status === "pending") return t("keno.ticket_pending");
+  if (ticket.status === "won") return t("keno.ticket_won", { amount: ticket.payout });
+  if (ticket.status === "refunded") return t("keno.ticket_refunded", { amount: ticket.stake });
+  return t("keno.ticket_lost");
+}
+
+// A round that failed before its draw refunds every ticket in it; the
+// server tells each player (keno.ticket.refunded) once the money is back.
+ws.on("keno.ticket.refunded", (msg) => {
+  const bucket = roundTickets.get(msg.round_id);
+  if (!bucket || !bucket.pendingIds.has(msg.ticket_id)) return;
+  bucket.pendingIds.delete(msg.ticket_id);
+  bucket.settled.push({ ticket_id: msg.ticket_id, payout: "0", stake: msg.stake, refunded: true, matches: 0 });
+  const ticket = bucket.tickets.find((t2) => t2.id === msg.ticket_id);
+  if (ticket) {
+    ticket.status = "refunded";
+    ticket.stake = msg.stake;
+  }
+  if (currentRound && currentRound.round_id === msg.round_id) renderMyTickets();
+  updateClosingConfirmation();
+  if (bucket.pendingIds.size === 0) {
+    showResult(msg.round_id, bucket.settled);
+    roundTickets.delete(msg.round_id);
+  }
+});
+
 // --- result screen -----------------------------------------------------
 
 function showResult(roundId, settled) {
+  // Only switch to the result if the player is still in Keno; a result
+  // arriving during a Bingo game used to take over the screen (2026-10-02).
+  // The ticket rows and history still show it.
+  if (!String(getState().screen || "").startsWith("keno")) return;
+  if (settled.length > 0 && settled.every((r) => r.refunded)) {
+    const refundedTotal = settled.reduce((sum, r) => sum + Number(r.stake || 0), 0);
+    showKenoScreen("keno-result");
+    el("keno-result-confetti").innerHTML = "";
+    el("keno-fairness-panel").classList.add("hidden");
+    el("keno-result-title").textContent = t("keno.result.refunded_title");
+    el("keno-result-title").classList.remove("win");
+    el("keno-result-amount").textContent = t("keno.result.refunded_amount", { amount: refundedTotal.toFixed(2) });
+    el("keno-result-amount").classList.remove("win");
+    el("keno-result-meta").textContent = t("keno.result.refunded_meta");
+    // Nothing was drawn, so there is nothing to verify.
+    el("keno-result-verify-btn").classList.add("hidden");
+    showResult._lastRoundId = roundId;
+    return;
+  }
   const totalPayout = settled.reduce(
     (sum, r) => sum + Number(r.payout || 0) + Number(r.jackpot_payout || 0),
     0
@@ -955,6 +1001,7 @@ function showResult(roundId, settled) {
   showKenoScreen("keno-result");
   el("keno-result-confetti").innerHTML = "";
   el("keno-fairness-panel").classList.add("hidden");
+  el("keno-result-verify-btn").classList.remove("hidden");
   const titleEl = el("keno-result-title");
   const amountEl = el("keno-result-amount");
   if (won) {
@@ -1171,7 +1218,7 @@ async function loadMyTickets() {
       const row = document.createElement("div");
       row.className = "keno-ticket-row";
       if (ticket.status === "won") row.classList.add("won");
-      const label = ticket.status === "won" ? t("wallet.history_won", { amount: ticket.payout }) : t("wallet.history_lost");
+      const label = ticketStatusText(ticket);
       row.innerHTML = `<span class="keno-ticket-picks">${ticket.picks.join(", ")}</span><span>${label}</span>`;
       list.appendChild(row);
     }

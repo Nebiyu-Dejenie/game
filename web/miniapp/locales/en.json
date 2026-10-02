@@ -242,14 +242,19 @@
   "keno.autoplay_error.invalid_stake": "Please choose a valid stake.",
   "keno.autoplay_error.invalid_stop_on_win_amount": "Please enter a valid win amount.",
   "keno.autoplay_error.invalid_stop_on_loss_amount": "Please enter a valid loss amount.",
+  "keno.autoplay_error.stake_not_allowed": "That stake isn't available right now.",
+  "keno.autoplay_error.keno_unavailable": "Keno isn't available right now.",
   "keno.onboard_step1_generic": "Pick your numbers from the board.",
   "keno.deposit_button": "Deposit",
   "keno.error.generic": "Couldn't complete this right now. Please try again.",
+  "keno.error.keno_not_on_allowlist": "Keno is open to invited testers only for now.",
+  "keno.error.invalid_idempotency_key": "Something went wrong placing your ticket. Please try again.",
 
   "keno.ticket_placed": "Ticket placed!",
   "keno.ticket_pending": "Waiting for the draw…",
   "keno.ticket_won": "Won {amount} ETB",
   "keno.ticket_lost": "No win",
+  "keno.ticket_refunded": "Refunded {amount} ETB",
 
   "keno.status_betting_open": "Place your picks",
   "keno.status_betting_closing": "Betting closes in {seconds}s",
@@ -268,6 +273,9 @@
   "keno.result.returned_title": "Part of your stake back",
   "keno.result.returned_amount": "{amount} ETB returned",
   "keno.result.net_line": "Net this round: {net} ETB",
+  "keno.result.refunded_title": "Round cancelled",
+  "keno.result.refunded_amount": "{amount} ETB refunded",
+  "keno.result.refunded_meta": "This round couldn't be drawn, so your stake is back in your wallet.",
 
   "keno.paytable_match_row": "{matches} of {picks} matched",
 

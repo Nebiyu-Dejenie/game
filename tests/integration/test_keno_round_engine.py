@@ -1036,3 +1036,50 @@ async def test_a_refund_returns_the_full_stake_from_the_reserve_and_leaves_the_j
         after = [await ledger.balance(conn, a.id) for a in (cash, reserve, jackpot)]
     changes = [a - b for a, b in zip(after, before)]
     assert changes == [Decimal("20.00"), Decimal("-20.00"), Decimal("0.00")]  # player, reserve, pool
+
+
+async def test_a_refunded_ticket_is_announced_to_its_player_with_their_new_balance(pool: asyncpg.Pool, redis) -> None:
+    """A failed round's refunds used to be silent: the round-level
+    keno.round.completed(failed) went out, but the player got no word about
+    their ticket and no balance push. The Mini App kept the ticket pending,
+    then showed it as lost (2026-10-02)."""
+    async with pool.acquire() as conn:
+        await _seed_fast_config_and_tier(conn)
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+        config_id = await conn.fetchval("SELECT id FROM keno_configs ORDER BY id DESC LIMIT 1")
+        tier_id = await conn.fetchval("SELECT id FROM keno_risk_tiers ORDER BY id DESC LIMIT 1")
+        paytable_id = await conn.fetchval("SELECT id FROM keno_paytables WHERE pick_count = 1 ORDER BY id DESC LIMIT 1")
+        server_seed = keno.generate_server_seed()
+        round_id = await conn.fetchval(
+            "INSERT INTO keno_rounds (seq, status, config_id, tier_id, server_seed, server_seed_hash) "
+            "VALUES ((SELECT COALESCE(MAX(seq),0)+1 FROM keno_rounds), 'betting_open', $1, $2, $3, $4) RETURNING id",
+            config_id, tier_id, server_seed, keno.server_seed_hash(server_seed),
+        )
+        ticket_id = await conn.fetchval(
+            "INSERT INTO keno_tickets (round_id, user_id, paytable_id, pick_count, stake, idempotency_key) "
+            "VALUES ($1, $2, $3, 1, 20, $4) RETURNING id",
+            round_id, user_id, paytable_id, f"test-{uuid.uuid4()}",
+        )
+        reserve = await ledger.get_or_create_account(conn, None, "keno_reserve")
+        cash = await ledger.get_or_create_account(conn, user_id, "user_cash")
+        await ledger.post(
+            conn, "keno_stake", [ledger.Entry(cash.id, Decimal("-20")), ledger.Entry(reserve.id, Decimal("20"))],
+            idempotency_key=f"test-stake-{uuid.uuid4()}", created_by="test",
+        )
+
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(f"user:{user_id}")
+    try:
+        await KenoRoundEngine(pool, redis)._fail_and_refund_round(round_id, reason="stuck_round_recovery")
+        received: list[dict] = []
+        deadline = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < deadline and len(received) < 2:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+            if msg is not None:
+                received.append(json.loads(msg["data"]))
+    finally:
+        await pubsub.aclose()
+
+    refunded = [m for m in received if m.get("t") == "keno.ticket.refunded"]
+    assert refunded == [{"t": "keno.ticket.refunded", "round_id": round_id, "ticket_id": ticket_id, "stake": "20.00"}]
+    assert any(m.get("t") == "balance_update" and m.get("cash") == "1000.00" for m in received), received

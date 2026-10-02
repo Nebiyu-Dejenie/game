@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -123,6 +124,90 @@ async def test_the_operator_default_stake_is_preselected(gateway_server, pool, r
         selected = page.locator("#keno-stake-chips .amount-chip.selected")
         await selected.wait_for()
         assert (await selected.text_content()).startswith("20.00")
+        assert errors == [], errors
+    finally:
+        await page.close()
+
+
+async def _bet(page, pool, user_id, round_id, *, stake: str) -> int:
+    await page.click('.keno-cell[aria-label="7"]')
+    await page.click(f'#keno-stake-chips .amount-chip:has-text("{stake}")')
+    await page.wait_for_function("!document.getElementById('keno-play-btn').disabled", timeout=5000)
+    await page.click("#keno-play-btn")
+    await page.wait_for_function(
+        "!document.getElementById('keno-my-tickets-section').classList.contains('hidden')", timeout=10000
+    )
+    ticket_id = await pool.fetchval("SELECT id FROM keno_tickets WHERE user_id = $1 AND round_id = $2", user_id, round_id)
+    assert ticket_id is not None
+    return ticket_id
+
+
+async def test_a_refunded_round_says_so_instead_of_showing_a_loss(gateway_server, pool, redis, browser, conn):
+    """A round that failed before its draw refunds the stake. The player used
+    to see nothing until a later round, and history called it "lost"."""
+    page, errors, user_id, round_id = await _open_round_and_player(pool, conn, browser)
+    try:
+        await _enter_keno(page, gateway_server)
+        ticket_id = await _bet(page, pool, user_id, round_id, stake="10.00")
+        await redis.publish(
+            f"user:{user_id}",
+            json.dumps({"t": "keno.ticket.refunded", "round_id": round_id, "ticket_id": ticket_id, "stake": "10.00"}),
+        )
+        await page.wait_for_selector("#screen-keno-result.active", timeout=10000)
+
+        locales = Path(__file__).resolve().parents[2] / "web/miniapp/locales"
+        titles = {json.loads((locales / f"{lang}.json").read_text())["keno.result.refunded_title"] for lang in ("en", "am")}
+        assert await page.text_content("#keno-result-title") in titles
+        assert "10.00" in await page.text_content("#keno-result-amount")
+        assert not await page.locator("#keno-result-title.win").count()
+        assert await page.locator("#keno-result-confetti > *").count() == 0
+        assert await page.locator("#keno-result-verify-btn.hidden").count() == 1
+        assert errors == [], errors
+    finally:
+        await page.close()
+
+
+async def test_a_keno_result_does_not_take_over_a_screen_outside_keno(gateway_server, pool, redis, browser, conn):
+    """A player who places a ticket and goes back to the Bingo rooms stays
+    there when the Keno round settles; the result used to take over the
+    screen, including a live Bingo game."""
+    page, errors, user_id, round_id = await _open_round_and_player(pool, conn, browser)
+    try:
+        await _enter_keno(page, gateway_server)
+        ticket_id = await _bet(page, pool, user_id, round_id, stake="10.00")
+        await page.evaluate("window.__triggerBackButton()")
+        await page.wait_for_selector("#screen-rooms.active", timeout=5000)
+
+        await redis.publish(
+            f"user:{user_id}",
+            json.dumps({
+                "t": "keno.ticket.settled", "round_id": round_id, "ticket_id": ticket_id, "matches": 1,
+                "payout": "34.00", "jackpot_payout": None, "stake": "10.00",
+            }),
+        )
+        # Give the frame time to arrive and be handled.
+        await page.wait_for_timeout(1500)
+        assert await page.locator("#screen-rooms.active").count() == 1
+        assert await page.locator("#screen-keno-result.active").count() == 0
+        assert errors == [], errors
+    finally:
+        await page.close()
+
+
+async def test_the_payout_preview_is_capped_at_the_max_win_per_ticket(gateway_server, pool, redis, browser, conn):
+    """Settlement caps a ticket's payout at the tier's max win; the preview
+    used to show the uncapped figure."""
+    page, errors, _, _ = await _open_round_and_player(pool, conn, browser)
+    try:
+        await conn.execute(
+            "UPDATE keno_risk_tiers SET max_win_per_ticket = 25.00 "
+            "WHERE id = (SELECT current_tier_id FROM keno_tier_state WHERE id = 1)"
+        )
+        await _enter_keno(page, gateway_server)
+        await page.click('.keno-cell[aria-label="7"]')
+        await page.click('#keno-stake-chips .amount-chip:has-text("50.00")')
+        await page.wait_for_function("!document.getElementById('keno-play-btn').disabled", timeout=5000)
+        assert (await page.text_content("#keno-payout-amount")).strip() == "25.00 ETB"
         assert errors == [], errors
     finally:
         await page.close()

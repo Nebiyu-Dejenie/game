@@ -242,14 +242,19 @@
   "keno.autoplay_error.invalid_stake": "እባክዎ ትክክለኛ መደብ ይምረጡ።",
   "keno.autoplay_error.invalid_stop_on_win_amount": "እባክዎ ትክክለኛ የማሸነፊያ መጠን ያስገቡ።",
   "keno.autoplay_error.invalid_stop_on_loss_amount": "እባክዎ ትክክለኛ የማጣት መጠን ያስገቡ።",
+  "keno.autoplay_error.stake_not_allowed": "ይህ የውርርድ መጠን አሁን አይገኝም።",
+  "keno.autoplay_error.keno_unavailable": "ኬኖ አሁን አይገኝም።",
   "keno.onboard_step1_generic": "ቁጥሮችዎን ከሰሌዳው ይምረጡ።",
   "keno.deposit_button": "ገቢ ያድርጉ",
   "keno.error.generic": "አሁን ማጠናቀቅ አልተቻለም። እባክዎ እንደገና ይሞክሩ።",
+  "keno.error.keno_not_on_allowlist": "ኬኖ ለአሁኑ ለተጋበዙ ሞካሪዎች ብቻ ነው።",
+  "keno.error.invalid_idempotency_key": "ቲኬትዎን ሲያስገቡ ችግር ተፈጥሯል። እባክዎ እንደገና ይሞክሩ።",
 
   "keno.ticket_placed": "ትኬት ገብቷል!",
   "keno.ticket_pending": "ዕጣ በመጠበቅ ላይ…",
   "keno.ticket_won": "{amount} ብር አሸንፈዋል",
   "keno.ticket_lost": "አላሸነፉም",
+  "keno.ticket_refunded": "{amount} ብር ተመላሽ ሆኗል",
 
   "keno.status_betting_open": "ምርጫዎን ያድርጉ",
   "keno.status_betting_closing": "የመደብ ጊዜ በ{seconds}ሰ ያበቃል",
@@ -268,6 +273,9 @@
   "keno.result.returned_title": "ከውርርድዎ ከፊሉ ተመልሷል",
   "keno.result.returned_amount": "{amount} ብር ተመልሷል",
   "keno.result.net_line": "በዚህ ዙር የተጣራ፦ {net} ብር",
+  "keno.result.refunded_title": "ዙሩ ተሰርዟል",
+  "keno.result.refunded_amount": "{amount} ብር ተመላሽ ሆኗል",
+  "keno.result.refunded_meta": "ይህ ዙር ዕጣ ሊወጣ ስላልቻለ ገንዘብዎ ወደ ቦርሳዎ ተመልሷል።",
 
   "keno.paytable_match_row": "ከ{picks} ውስጥ {matches} ተመሳስለዋል",
 
