@@ -498,3 +498,17 @@ async def test_start_session_refuses_what_every_round_would_refuse(pool: asyncpg
             "UPDATE keno_configs SET keno_enabled = true WHERE id = "
             "(SELECT id FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1)"
         )
+
+
+async def test_start_session_on_a_deployment_with_no_keno_config_is_refused_not_a_crash(
+    pool: asyncpg.Pool, conn: asyncpg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from packages.core import keno_config
+
+    async def never_configured(_conn):
+        raise keno_config.KenoNotConfigured("no active keno_configs row")
+
+    user_id = await create_funded_user(conn, Decimal("1000.00"))
+    monkeypatch.setattr(keno_config, "load_active_config", never_configured)
+    with pytest.raises(keno_autoplay.AutoplayKenoUnavailable):
+        await keno_autoplay.start_session(pool, user_id=user_id, picks=[1], stake=Decimal("10"), rounds_total=3)

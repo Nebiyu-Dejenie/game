@@ -487,3 +487,49 @@ async def test_hot_cold_lookback_is_bounded(gateway_server):
             for n in (-1, 0, 50, 200, 201, 10**9)
         ]
     assert statuses == [422, 422, 200, 200, 422, 422]
+
+
+async def test_keno_state_shows_only_the_numbers_revealed_so_far(gateway_server, pool, conn):
+    """The draw is written in full when drawing starts and revealed one
+    number at a time. /api/keno/state sent all 20 at once, so anyone
+    reading the response knew the result before the animation showed it.
+    (Betting is closed by then, so it spoiled the reveal; no ticket could
+    use it.)"""
+    round_id = await _seed_open_round(conn)
+    server_seed = keno.generate_server_seed()
+    drawn = keno.derive_keno_draw(server_seed, "gw-test-partial-reveal")
+    await conn.execute(
+        "UPDATE keno_rounds SET status = 'drawing', server_seed = $2, public_seed = 'gw-test-partial-reveal', "
+        "drawn_numbers = $3, reveal_index = 7, betting_closed_at = now(), draw_started_at = now() WHERE id = $1",
+        round_id, server_seed, drawn,
+    )
+    headers, _user_id = await _authed_headers(gateway_server, pool, conn)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{http_base(gateway_server)}/api/keno/state", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["round_id"] == round_id
+    assert body["drawn_numbers"] == list(drawn[:7])
+
+    await conn.execute("UPDATE keno_rounds SET status = 'draw_complete', reveal_index = 20 WHERE id = $1", round_id)
+    async with httpx.AsyncClient() as client:
+        body = (await client.get(f"{http_base(gateway_server)}/api/keno/state", headers=headers)).json()
+    assert body["drawn_numbers"] == list(drawn)
+    await conn.execute("UPDATE keno_rounds SET status = 'completed' WHERE id = $1", round_id)
+
+
+async def test_keno_state_is_503_not_500_when_keno_was_never_configured(gateway_server, pool, conn, monkeypatch):
+    """A deployment with no keno_configs row raised RuntimeError out of
+    load_active_config: a 500 to every player who opened the Mini App,
+    instead of the 503 the client treats as "Keno isn't here"."""
+    from packages.core import keno_config
+
+    async def never_configured(_conn):
+        raise keno_config.KenoNotConfigured("no active keno_configs row")
+
+    headers, _user_id = await _authed_headers(gateway_server, pool, conn)
+    monkeypatch.setattr(keno_config, "load_active_config", never_configured)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{http_base(gateway_server)}/api/keno/state", headers=headers)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "keno_not_configured"

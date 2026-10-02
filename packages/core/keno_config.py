@@ -17,12 +17,18 @@ import asyncpg
 from packages.core import ledger
 
 
+class KenoNotConfigured(RuntimeError):
+    """No config or no tier yet: a deployment where Keno was never set up.
+    A RuntimeError, as before, so callers that don't expect it still fail
+    loudly; player-facing callers turn it into "Keno isn't available"."""
+
+
 async def load_active_config(conn: ledger.AsyncpgConnection) -> asyncpg.Record:
     row = await conn.fetchrow(
         "SELECT * FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1"
     )
     if row is None:
-        raise RuntimeError("no active keno_configs row -- Keno has never been configured on this deployment")
+        raise KenoNotConfigured("no active keno_configs row -- Keno has never been configured on this deployment")
     return row
 
 
@@ -40,7 +46,7 @@ async def load_current_tier(conn: ledger.AsyncpgConnection) -> asyncpg.Record:
         """
     )
     if row is None:
-        raise RuntimeError("keno_tier_state has no row -- Keno's risk tier has never been initialized")
+        raise KenoNotConfigured("keno_tier_state has no row -- Keno's risk tier has never been initialized")
     return row
 
 

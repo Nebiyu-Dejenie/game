@@ -163,7 +163,10 @@ async def start_session(
             # now: a session with a disabled stake, a pick count outside the
             # game's limits, or Keno off used to start and then stop itself
             # on its first ticket (2026-10-02).
-            config = await keno_config.load_active_config(conn)
+            try:
+                config = await keno_config.load_active_config(conn)
+            except keno_config.KenoNotConfigured:
+                raise AutoplayKenoUnavailable(str(user_id)) from None
             if not config["keno_enabled"] or not await keno_config.is_user_allowed_to_play(conn, user_id, config):
                 raise AutoplayKenoUnavailable(str(user_id))
             tier = await keno_config.load_current_tier(conn)

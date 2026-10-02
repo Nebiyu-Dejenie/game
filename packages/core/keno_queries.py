@@ -15,6 +15,9 @@ import asyncpg
 
 from packages.core import keno, keno_config, ledger
 
+# Statuses in which every drawn number has been revealed to players.
+_DRAW_PUBLIC_STATUSES = ("draw_complete", "settling", "completed", "failed")
+
 
 async def game_center_state(pool: asyncpg.Pool, user_id: int) -> dict[str, Any] | None:
     """The Game Center / current-round summary Part 10's "current round"
@@ -42,7 +45,12 @@ async def game_center_state(pool: asyncpg.Pool, user_id: int) -> dict[str, Any] 
         # this specific round actually offered) -- the same "an admin
         # editing must not alter in-flight" split every other Keno
         # config read already respects.
-        active_config = await keno_config.load_active_config(conn)
+        # A deployment with no config yet answers "not available" too; it
+        # used to raise out of here as a 500 (2026-10-02).
+        try:
+            active_config = await keno_config.load_active_config(conn)
+        except keno_config.KenoNotConfigured:
+            return None
         if not await keno_config.is_user_allowed_to_play(conn, user_id, active_config):
             return None
 
@@ -59,6 +67,12 @@ async def game_center_state(pool: asyncpg.Pool, user_id: int) -> dict[str, Any] 
         config = await conn.fetchrow("SELECT * FROM keno_configs WHERE id = $1", round_row["config_id"])
         jackpot_balance = await _jackpot_balance(conn)
         recent_draw = round_row["drawn_numbers"]
+        # The whole draw is written when drawing starts and revealed one
+        # number at a time; until it's complete, only what has been
+        # revealed goes out (2026-10-02). It used to send all 20, ahead
+        # of the animation.
+        if recent_draw is not None and round_row["status"] not in _DRAW_PUBLIC_STATUSES:
+            recent_draw = recent_draw[: round_row["reveal_index"] or 0]
 
     assert tier is not None and config is not None
     max_picks = min(config["max_picks"], tier["max_pick_count"])
