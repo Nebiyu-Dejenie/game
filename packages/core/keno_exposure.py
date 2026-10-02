@@ -52,8 +52,12 @@ estimate said beforehand.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
+from functools import lru_cache
 
 from packages.core import keno
 
@@ -73,6 +77,79 @@ def single_ticket_payout_variance(pick_count: int, multipliers: dict[int, Decima
     scales by stake^2."""
     per_unit_stddev = keno.volatility(pick_count, multipliers)
     return (stake**2) * (per_unit_stddev**2)
+
+
+def _as_key(multipliers: dict[int, Decimal]) -> tuple[tuple[int, str], ...]:
+    return tuple(sorted((int(k), str(v)) for k, v in multipliers.items()))
+
+
+@lru_cache(maxsize=8192)
+def _unit_payout_covariance(
+    picks_a: int, mult_a: tuple[tuple[int, str], ...], picks_b: int, mult_b: tuple[tuple[int, str], ...], overlap: int
+) -> Fraction:
+    """Exact Cov[m_a(X), m_b(Y)] per unit stake, for two tickets whose pick
+    sets share `overlap` numbers, under one draw of DRAW_COUNT from
+    NUMBER_POOL_SIZE. The draw splits into four groups: the shared numbers
+    (`overlap`), A only, B only, and the rest, which makes it a multivariate
+    hypergeometric. X = shared + A-only hits, Y = shared + B-only hits.
+    Identical sets give Cov = Var; disjoint sets a small negative value."""
+    ma = {k: Fraction(v) for k, v in mult_a}
+    mb = {k: Fraction(v) for k, v in mult_b}
+    only_a, only_b = picks_a - overlap, picks_b - overlap
+    rest = keno.NUMBER_POOL_SIZE - picks_a - picks_b + overlap
+    total = math.comb(keno.NUMBER_POOL_SIZE, keno.DRAW_COUNT)
+    e_ab = e_a = e_b = Fraction(0)
+    for i in range(overlap + 1):
+        for j in range(only_a + 1):
+            for k in range(only_b + 1):
+                others = keno.DRAW_COUNT - i - j - k
+                if others < 0 or others > rest:
+                    continue
+                ways = math.comb(overlap, i) * math.comb(only_a, j) * math.comb(only_b, k) * math.comb(rest, others)
+                prob = Fraction(ways, total)
+                pa, pb = ma.get(i + j, Fraction(0)), mb.get(i + k, Fraction(0))
+                e_ab += prob * pa * pb
+                e_a += prob * pa
+                e_b += prob * pb
+    return e_ab - e_a * e_b
+
+
+def round_covariance_term(
+    *,
+    new_picks: frozenset[int],
+    new_multipliers: dict[int, Decimal],
+    new_stake: Decimal,
+    existing: Iterable[tuple[frozenset[int], dict[int, Decimal], Decimal]],
+) -> Decimal:
+    """2 * Cov(the new ticket's payout, the payouts of the tickets already in
+    the round): what the round's payout variance gains beyond the new
+    ticket's own variance, since Var(S + X) = Var(S) + Var(X) + 2 Cov(S, X).
+
+    Without it the round treated every ticket as independent. Tickets share
+    one draw, so tickets on the same numbers win or lose together: 130
+    identical 1-pick tickets all hit at once a quarter of the time, and the
+    old estimate let a round carry far more of them than its ceiling allows
+    (platform audit Blocker 1, 2026-10-02). `existing` is (picks,
+    multipliers, stake) per ticket; tickets on the same numbers and
+    paytable are pooled before the pairwise sum."""
+    pooled: dict[tuple[frozenset[int], tuple[tuple[int, str], ...]], Decimal] = {}
+    for picks, multipliers, stake in existing:
+        key = (picks, _as_key(multipliers))
+        pooled[key] = pooled.get(key, Decimal(0)) + stake
+    new_key = _as_key(new_multipliers)
+    weighted = Fraction(0)
+    for (picks, mult_key), stake in pooled.items():
+        cov = _unit_payout_covariance(len(new_picks), new_key, len(picks), mult_key, len(new_picks & picks))
+        weighted += Fraction(str(stake)) * cov
+    term = 2 * Fraction(str(new_stake)) * weighted
+    return Decimal(term.numerator) / Decimal(term.denominator)
+
+
+def max_ticket_payout(multipliers: dict[int, Decimal], *, stake: Decimal, max_win_per_ticket: Decimal) -> Decimal:
+    """The most one ticket can ever pay out (before any jackpot, which comes
+    from its own pool): its top multiplier, capped by the tier's max win."""
+    top = max((Decimal(v) for v in multipliers.values()), default=Decimal(0))
+    return min(stake * top, max_win_per_ticket)
 
 
 @dataclass(frozen=True)
@@ -143,6 +220,7 @@ def check_round_exposure(
     reserve_balance: Decimal,
     max_round_exposure_pct: Decimal,
     jackpot_diversion_bps: int,
+    max_possible_payout: Decimal | None = None,
 ) -> ExposureCheck:
     """The Part 7.3 gate itself: would accepting this ticket push the
     round's estimated 99.9th-percentile NET exposure -- payout minus
@@ -199,6 +277,12 @@ def check_round_exposure(
     gross_exposure = estimate_percentile_exposure(
         total_expected_payout=projected_expected, total_payout_variance=projected_variance
     )
+    # The normal approximation can overshoot what the round could ever pay
+    # (100 identical 1-pick tickets: about 1.6x their combined top payout).
+    # No outcome pays more than every ticket's own maximum, so that's a hard
+    # upper bound; for identical tickets it makes the cap the true worst case.
+    if max_possible_payout is not None:
+        gross_exposure = min(gross_exposure, max_possible_payout)
     projected_stake = current_total_stake + new_ticket_stake
     reserve_credited = (projected_stake * (Decimal(10000) - Decimal(jackpot_diversion_bps)) / Decimal(10000)).quantize(
         Decimal("0.01")

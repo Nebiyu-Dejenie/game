@@ -558,3 +558,29 @@ async def test_daily_loss_cap_is_combined_across_bingo_and_keno_not_tracked_per_
     assert await responsible_gaming.today_net_loss(conn, user_b) == Decimal("20.00")
     block = await responsible_gaming.check_stake_allowed(conn, user_b, Decimal("45"))
     assert block.blocked and block.reason == "loss_limit_reached"
+
+
+async def test_a_round_stops_taking_identical_tickets_at_its_ceiling(pool: asyncpg.Pool, monkeypatch) -> None:
+    """Blocker 1 through the real placement path: with the reserve pinned at
+    30,000 and a 10% ceiling (3,000), identical 10 ETB 1-pick tickets at
+    3.40x stop where a full hit would cost the reserve its ceiling:
+    3,000 / (34.00 - 9.85) = 124. Before covariance they were never refused."""
+    async def pinned_reserve(conn):
+        return Decimal("30000.00")
+
+    monkeypatch.setattr(keno_tickets, "_keno_reserve_balance", pinned_reserve)
+    async with pool.acquire() as conn:
+        await _seed_keno_round(conn, max_round_exposure_pct=Decimal("0.10"), per_user_round_capacity_share_bps=10000)
+        users = [await create_funded_user(conn, Decimal("100.00")) for _ in range(140)]
+
+    accepted = 0
+    for user_id in users:
+        try:
+            await keno_tickets.place_ticket(
+                pool, redis=object(), user_id=user_id, picks=[7], stake=Decimal("10"),
+                idempotency_key=f"test-identical-{uuid.uuid4()}",
+            )
+            accepted += 1
+        except keno_tickets.RoundCapacityReached:
+            break
+    assert accepted == 124

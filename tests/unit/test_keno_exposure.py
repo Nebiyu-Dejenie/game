@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from fractions import Fraction
 
-from packages.core import keno_exposure
+from packages.core import keno, keno_exposure
 
 
 def test_single_ticket_expected_payout_matches_stake_times_rtp() -> None:
@@ -259,3 +260,97 @@ def test_check_per_user_round_share_never_divides_by_zero() -> None:
         round_exposure_ceiling=Decimal("0"),
         max_share_bps=2000,
     )
+
+
+def _fill_round_with_identical_tickets(
+    *, picks: frozenset[int], multipliers: dict[int, Decimal], stake: Decimal, reserve: Decimal, pct: Decimal,
+    max_win: Decimal, with_correlation: bool, limit: int = 2000,
+) -> int:
+    """Places the same ticket into one round until the exposure check
+    refuses one, the way keno_tickets.place_ticket accumulates; returns how
+    many were accepted (capped at `limit`)."""
+    expected = variance = staked = Decimal(0)
+    existing: list[tuple[frozenset[int], dict[int, Decimal], Decimal]] = []
+    for accepted in range(limit):
+        risk = keno_exposure.compute_ticket_risk_contribution(len(picks), multipliers, stake=stake)
+        if with_correlation:
+            risk = keno_exposure.TicketRiskContribution(
+                expected_payout=risk.expected_payout,
+                payout_variance=risk.payout_variance + keno_exposure.round_covariance_term(
+                    new_picks=picks, new_multipliers=multipliers, new_stake=stake, existing=existing
+                ),
+            )
+        max_possible = sum(
+            (keno_exposure.max_ticket_payout(m, stake=st, max_win_per_ticket=max_win) for _, m, st in existing),
+            keno_exposure.max_ticket_payout(multipliers, stake=stake, max_win_per_ticket=max_win),
+        ) if with_correlation else None
+        check = keno_exposure.check_round_exposure(
+            current_total_expected_payout=expected, current_total_payout_variance=variance,
+            current_total_stake=staked, new_ticket=risk, new_ticket_stake=stake, reserve_balance=reserve,
+            max_round_exposure_pct=pct, jackpot_diversion_bps=150, max_possible_payout=max_possible,
+        )
+        if not check.allowed:
+            return accepted
+        expected += risk.expected_payout
+        variance += risk.payout_variance
+        staked += stake
+        existing.append((picks, multipliers, stake))
+    return limit
+
+
+def test_identical_tickets_are_capped_at_the_ceiling_not_treated_as_independent():
+    """Blocker 1 (2026-10-02): the round check summed ticket variances as if
+    tickets were independent. Identical tickets share one outcome, so at the
+    Stage 1 reserve (30,000, Tier 1 at 10%, a 3,000 ceiling) a round would
+    take any number of identical 10 ETB 1-pick tickets at 3.28x. All of them
+    hit together a quarter of the time, and 1,308 of them empty the reserve.
+    With covariance and the max-payout bound, the round stops where one full
+    hit would cost the reserve its ceiling: 3,000 / (10 * 3.28 - 9.85) = 130."""
+    args = dict(
+        picks=frozenset({7}), multipliers={1: Decimal("3.28")}, stake=Decimal("10"),
+        reserve=Decimal("30000"), pct=Decimal("0.10"), max_win=Decimal("800"),
+    )
+    assert _fill_round_with_identical_tickets(**args, with_correlation=False) == 2000  # never refused
+    accepted = _fill_round_with_identical_tickets(**args, with_correlation=True)
+    assert accepted == 130
+    worst_case_net_cost = accepted * (Decimal("10") * Decimal("3.28") - Decimal("9.85"))
+    assert worst_case_net_cost <= Decimal("3000")
+
+
+def test_covariance_of_identical_pick_sets_is_their_variance_and_disjoint_ones_are_slightly_negative():
+    m = {1: Decimal("3.28")}
+    key = keno_exposure._as_key(m)
+    variance = keno.volatility(1, m) ** 2
+    assert keno_exposure._unit_payout_covariance(1, key, 1, key, 1) == Fraction(str(variance))
+    assert -Fraction(1, 10) < keno_exposure._unit_payout_covariance(1, key, 1, key, 0) < 0
+
+
+def test_diverse_tickets_keep_the_diversification_the_ceiling_was_built_for():
+    """The fix must not shrink a normal round: tickets on different numbers
+    are nearly independent, so a round still takes hundreds of them."""
+    expected = variance = staked = Decimal(0)
+    existing: list[tuple[frozenset[int], dict[int, Decimal], Decimal]] = []
+    m, stake = {1: Decimal("3.28")}, Decimal("10")
+    accepted = 0
+    for n in range(400):
+        picks = frozenset({(n % 80) + 1})
+        risk = keno_exposure.compute_ticket_risk_contribution(1, m, stake=stake)
+        risk = keno_exposure.TicketRiskContribution(
+            expected_payout=risk.expected_payout,
+            payout_variance=risk.payout_variance + keno_exposure.round_covariance_term(
+                new_picks=picks, new_multipliers=m, new_stake=stake, existing=existing),
+        )
+        check = keno_exposure.check_round_exposure(
+            current_total_expected_payout=expected, current_total_payout_variance=variance,
+            current_total_stake=staked, new_ticket=risk, new_ticket_stake=stake, reserve_balance=Decimal("30000"),
+            max_round_exposure_pct=Decimal("0.10"), jackpot_diversion_bps=150,
+            max_possible_payout=Decimal("32.80") * (accepted + 1),
+        )
+        if not check.allowed:
+            break
+        accepted += 1
+        expected += risk.expected_payout
+        variance += risk.payout_variance
+        staked += stake
+        existing.append((picks, m, stake))
+    assert accepted == 400

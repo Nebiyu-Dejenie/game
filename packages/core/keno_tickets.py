@@ -355,6 +355,39 @@ async def _place_ticket(
                 round_id,
             )
             assert round_accumulators is not None  # already row-locked above in this same transaction
+
+            # Tickets share one draw, so their payouts are correlated: the
+            # same numbers win or lose together. This ticket's variance
+            # contribution includes its covariance with every ticket
+            # already in the round, so the round's running variance is
+            # exact, and the round can't carry more identical or
+            # overlapping tickets than its ceiling allows (Blocker 1,
+            # 2026-10-02). The same rows bound the gross estimate at the
+            # most the round could ever pay.
+            round_tickets = await conn.fetch(
+                "SELECT t.stake, p.multipliers, array_agg(s.number) AS picks "
+                "FROM keno_tickets t JOIN keno_paytables p ON p.id = t.paytable_id "
+                "JOIN keno_ticket_selections s ON s.ticket_id = t.id "
+                "WHERE t.round_id = $1 AND t.status = 'pending' GROUP BY t.id, t.stake, p.multipliers",
+                round_id,
+            )
+            existing = [
+                (frozenset(r["picks"]), keno_config.paytable_multipliers(r), Decimal(r["stake"])) for r in round_tickets
+            ]
+            max_win = Decimal(tier["max_win_per_ticket"])
+            ticket_risk = keno_exposure.TicketRiskContribution(
+                expected_payout=ticket_risk.expected_payout,
+                payout_variance=ticket_risk.payout_variance
+                + keno_exposure.round_covariance_term(
+                    new_picks=validated_picks, new_multipliers=multipliers, new_stake=stake, existing=existing
+                ),
+            )
+            max_possible_payout = keno_exposure.max_ticket_payout(
+                multipliers, stake=stake, max_win_per_ticket=max_win
+            ) + sum(
+                (keno_exposure.max_ticket_payout(m, stake=st, max_win_per_ticket=max_win) for _, m, st in existing),
+                Decimal(0),
+            )
             exposure_check = keno_exposure.check_round_exposure(
                 current_total_expected_payout=Decimal(round_accumulators["total_expected_payout"]),
                 current_total_payout_variance=Decimal(round_accumulators["total_payout_variance"]),
@@ -364,6 +397,7 @@ async def _place_ticket(
                 reserve_balance=reserve_balance,
                 max_round_exposure_pct=tier["max_round_exposure_pct"],
                 jackpot_diversion_bps=config["jackpot_diversion_bps"],
+                max_possible_payout=max_possible_payout,
             )
             if not exposure_check.allowed:
                 raise RoundCapacityReached(str(exposure_check.projected_exposure))
