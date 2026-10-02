@@ -5,7 +5,7 @@ safe to change, what's waiting on whom, and where the detail lives. Every
 other document goes deeper on one topic; this one links to them.
 
 **Last updated:** 2026-10-02 · **Production:** `7fb013f` (release 2, deployed 2026-10-01 12:24 UTC) ·
-**Main:** ahead of production by the Keno end-to-end work (release 3 candidate, not deployed) ·
+**Main:** `36f9846`, release 3 candidate: CI green, deploy blocked on the network path (D1) ·
 **Alembic head:** `b5d9e3a1c7f2` (production and main agree)
 
 ## Contents
@@ -266,7 +266,7 @@ The major milestones. Details in git and the linked docs.
 
 | Work | State | Next action |
 |---|---|---|
-| Keno end to end (operator directive, 2026-10-02) | On main, tested, not deployed: correlated exposure (5acecd5); configured pick limits and autoplay pre-checks (2cc6cc1); refunds announced to the player (7504024); Keno in wallet history and refunds labelled (1636889); balance push after a stake (ec8a855); no early draw numbers, 503 when unconfigured (501f823); ticket resync after reconnect, reload or background, and autoplay results (673bc36); balance on the Keno screen and a live Keno button (3395a30); admin config integrity ("Admin Keno config writes can no longer…") | Push, green CI, release 3 through the runbook, then Step 3 testers |
+| Keno end to end (operator directive, 2026-10-02) | On main, tested, not deployed: correlated exposure (5acecd5); configured pick limits and autoplay pre-checks (2cc6cc1); refunds announced to the player (7504024); Keno in wallet history and refunds labelled (1636889); balance push after a stake (ec8a855); no early draw numbers, 503 when unconfigured (501f823); ticket resync after reconnect, reload or background, and autoplay results (673bc36); balance on the Keno screen and a live Keno button (3395a30); admin config integrity ("Admin Keno config writes can no longer…") | **CI green on `36f9846`** (run 36985646130; only the allowed-to-fail load test failed). Release 3 deploy script and bundle are prepared (`7fb013f..36f9846`, rollback tag `jobingo:rollback-7fb013f`, 12 in-container code checks), but on 2026-10-02 the dev machine lost its route to 192.168.1.115 before the copy, and `ssh.arada.click` isn't live (D1). Deploy as soon as either path works, then Step 3 testers |
 | Keno launch Steps 3–4 | Reserve funded (Step 2). Step 3 needs tester identities from the operator | See [Keno Launch Plan](#keno-launch-plan) |
 | Audit medium/low verification | 66 not yet verified | Money paths first; see [Recommended Next Work](#recommended-next-work) |
 | Lock-order sweep | Done for Keno and payments; admin, bot and gateway still to do | |
@@ -778,7 +778,7 @@ Deliberately not built, with the reason:
 In order. Each item says what it unblocks.
 
 1. ~~Deploy Step 1~~: done 2026-10-01 (`2aa504a`). ~~Switch Telebirr SMS deposits off~~: done 09:13 UTC. ~~Fund the reserve~~: done.
-2. **Release 3:** push, green CI, deploy the Keno end-to-end work through the runbook.
+2. **Release 3:** CI is green on `36f9846`; deploy it through the runbook once a network path exists (D1).
 3. **Keno Step 3, then Step 4:** controlled testing with allowlisted testers (needs their identities), then enable Keno once verified.
 4. **Start monitoring** (needs D3), then test-fire an alert end to end.
 5. **Verify the remaining medium and low findings, money paths first:**
@@ -839,6 +839,7 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
+- **2026-10-02 (later):** Main pushed to `36f9846`; CI green. Three test-only fixes on the way: a history test leaked an open Keno round into the chaos test; two timing-flaky tests (the Bingo double-claim refusal reason, the device-console reactivate wait). The bot agent filter uses `ChatType.PRIVATE`. The release 3 deploy is blocked: the dev machine can't reach 192.168.1.115, and `ssh.arada.click` waits on the operator (D1). Production healthy (`/healthz` 200), still at `7fb013f`.
 - **2026-10-02:** Keno end-to-end work on main under the operator's directive to finish Keno (nothing deployed): correlated exposure (D4 done), server-side pick limits, refund notices, Keno in wallet history, a balance push after a stake, no early draw numbers, ticket resync, the balance on the Keno screen, and admin config integrity fixes. Admin and agent-portal audits recorded under Known Bugs. New decisions D15–D17; the agent-portal evidence findings added to D9.
 - **2026-10-01 12:24 UTC:** **Release 2 deployed** (`7fb013f`): the fixes for #77 (whole cents), #69/#73 (deposit cap), #36/#67 (bonus race and sweep) and #81 (withdrawal retry). Every check passed and reconcile was OK before and after.
   - SSH via `ssh.arada.click` is held back: the server accepts password logins (`Permission denied (publickey,password)`), so the DNS record stays unpublished until the operator turns them off (ops/ssh-access.md, step 2).
