@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 
 import asyncpg
 from aiogram import F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message, ReplyKeyboardRemove
 from redis.asyncio import Redis
@@ -688,7 +689,7 @@ async def _is_active_payment_agent(message: Message, pool: asyncpg.Pool) -> bool
     return row is not None
 
 
-@router.message(Command("portal"), F.chat.type == "private", _is_active_payment_agent)
+@router.message(Command("portal"), F.chat.type == ChatType.PRIVATE, _is_active_payment_agent)
 async def on_agent_portal_command(
     message: Message, pool: asyncpg.Pool, redis: Redis, notifier: Notifier, settings: Settings
 ) -> None:
@@ -720,7 +721,7 @@ async def on_agent_portal_command(
     await notifier.send(message.chat.id, t("agent.portal_link", language, url=url))
 
 
-@router.message(F.text, F.chat.type == "private", _is_active_payment_agent)
+@router.message(F.text, F.chat.type == ChatType.PRIVATE, _is_active_payment_agent)
 async def on_agent_sms(message: Message, pool: asyncpg.Pool, notifier: Notifier) -> None:
     """Telegram payment-agent SMS-forwarding channel (CTO directive
     section 115) -- a thin adapter: the filter above authenticates the
