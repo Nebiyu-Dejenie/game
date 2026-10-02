@@ -164,6 +164,7 @@ def _ticket_row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
         "matches": row["matches"],
         "payout": str(row["payout"]) if row["payout"] is not None else None,
         "jackpot_payout": str(row["jackpot_payout"]) if row["jackpot_payout"] else None,
+        "autoplay": row["autoplay_session_id"] is not None,
         "created_at": row["created_at"],
         "settled_at": row["settled_at"],
     }

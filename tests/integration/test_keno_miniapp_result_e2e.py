@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.core import keno
+from packages.core import keno, keno_tickets
 from tests.integration.conftest import create_funded_user, next_telegram_id
 from tests.integration.test_keno_miniapp_e2e import _clean_keno_lock_and_rounds, _seed_fast_config_and_tier  # noqa: F401
 from tests.integration.test_miniapp_e2e import prepare_page
@@ -210,4 +210,79 @@ async def test_the_payout_preview_is_capped_at_the_max_win_per_ticket(gateway_se
         assert (await page.text_content("#keno-payout-amount")).strip() == "25.00 ETB"
         assert errors == [], errors
     finally:
+        await page.close()
+
+
+async def test_a_settlement_missed_while_away_is_picked_up_on_return(gateway_server, pool, redis, browser, conn):
+    """Events sent while the app was in the background or the socket was
+    down are lost. The ticket used to stay "pending" forever; coming back
+    now re-reads it."""
+    page, errors, user_id, round_id = await _open_round_and_player(pool, conn, browser)
+    try:
+        await _enter_keno(page, gateway_server)
+        ticket_id = await _bet(page, pool, user_id, round_id, stake="10.00")
+        # Settled with no event reaching this client.
+        await pool.execute(
+            "UPDATE keno_tickets SET status = 'won', payout = 34.00, matches = 1, settled_at = now() WHERE id = $1",
+            ticket_id,
+        )
+        await page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        await page.wait_for_selector("#screen-keno-result.active", timeout=10000)
+        assert "34.00" in await page.text_content("#keno-result-amount")
+        assert errors == [], errors
+    finally:
+        await page.close()
+
+
+async def test_a_reload_keeps_the_rounds_tickets(gateway_server, pool, redis, browser, conn):
+    page, errors, user_id, round_id = await _open_round_and_player(pool, conn, browser)
+    try:
+        await _enter_keno(page, gateway_server)
+        await _bet(page, pool, user_id, round_id, stake="10.00")
+        await page.reload()
+        await page.wait_for_selector("#screen-rooms.active", timeout=10000)
+        await page.click("#open-keno-btn")
+        await page.wait_for_selector("#screen-keno.active", timeout=10000)
+        await page.wait_for_function(
+            "!document.getElementById('keno-my-tickets-section').classList.contains('hidden')", timeout=10000
+        )
+        assert await page.locator("#keno-my-tickets-list .keno-ticket-row").count() == 1
+        assert errors == [], errors
+    finally:
+        await page.close()
+
+
+async def test_an_autoplay_rounds_result_shows_without_leaving_the_board(gateway_server, pool, redis, browser, conn):
+    """Autoplay's tickets are placed server-side, so the client never knew
+    about them and showed nothing per round."""
+    from packages.core import keno_autoplay
+
+    page, errors, user_id, round_id = await _open_round_and_player(pool, conn, browser)
+    try:
+        await _enter_keno(page, gateway_server)
+        session = await keno_autoplay.start_session(
+            pool, user_id=user_id, picks=[7], stake=Decimal("10"), rounds_total=3
+        )
+        ticket = await keno_tickets.place_ticket(
+            pool, redis, user_id=user_id, picks=[7], stake=Decimal("10"),
+            idempotency_key=f"autoplay:{session.id}:{round_id}", autoplay_session_id=session.id,
+        )
+        await redis.publish("keno:live", json.dumps({"t": "keno.betting.closed", "round_id": round_id}))
+        await page.wait_for_function(
+            "!document.getElementById('keno-my-tickets-section').classList.contains('hidden')", timeout=10000
+        )
+        await redis.publish(
+            f"user:{user_id}",
+            json.dumps({
+                "t": "keno.ticket.settled", "round_id": round_id, "ticket_id": ticket.id, "matches": 1,
+                "payout": "34.00", "jackpot_payout": None, "stake": "10.00",
+            }),
+        )
+        await page.wait_for_function(
+            "document.getElementById('keno-play-status').textContent.includes('34.00')", timeout=10000
+        )
+        assert await page.locator("#screen-keno.active").count() == 1
+        assert errors == [], errors
+    finally:
+        await keno_autoplay.stop_session(pool, user_id=user_id)
         await page.close()

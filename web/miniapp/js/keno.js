@@ -147,9 +147,96 @@ function ticketBucket(roundId) {
 
 function hasActiveBetThisRound() {
   for (const bucket of roundTickets.values()) {
-    if (bucket.tickets.length > 0) return true;
+    if (bucket.pendingIds.size > 0) return true;
   }
   return false;
+}
+
+// Rounds whose result this client has already shown, so a sync that read
+// the server just before the settlement event can't bring them back.
+const finishedRounds = new Set();
+
+function finishRound(roundId, bucket) {
+  finishedRounds.add(roundId);
+  roundTickets.delete(roundId);
+  if (bucket.tickets.length > 0 && bucket.tickets.every((tk) => tk.autoplay)) {
+    showAutoplayRoundResult(bucket.settled);
+  } else {
+    showResult(roundId, bucket.settled);
+  }
+}
+
+// The server is the record of this player's tickets; the client hears
+// about them only as events, and events are lost while the socket is down
+// or the app is in the background. A ticket whose settlement was missed
+// stayed "pending" forever, a reload forgot the round's tickets, and
+// autoplay's tickets (placed server-side) were never seen at all
+// (2026-10-02). This re-reads the current round and every round still
+// waiting on a result, and applies whatever was missed.
+async function syncTickets() {
+  const roundIds = new Set();
+  if (currentRound) roundIds.add(currentRound.round_id);
+  for (const [roundId, bucket] of roundTickets) {
+    if (bucket.pendingIds.size > 0) roundIds.add(roundId);
+  }
+  for (const roundId of roundIds) {
+    if (finishedRounds.has(roundId)) continue;
+    let rows;
+    try {
+      const response = await fetch(`/api/keno/tickets?round_id=${roundId}`, { headers: authHeader() });
+      if (!response.ok) continue;
+      rows = await response.json();
+    } catch {
+      continue;
+    }
+    applyServerTickets(roundId, rows);
+  }
+}
+
+function applyServerTickets(roundId, rows) {
+  if (rows.length === 0 || finishedRounds.has(roundId)) return;
+  const bucket = ticketBucket(roundId);
+  const hadPending = bucket.pendingIds.size > 0;
+  let resolvedNow = false;
+  for (const row of rows.slice().sort((a, b) => a.id - b.id)) {
+    let ticket = bucket.tickets.find((tk) => tk.id === row.id);
+    if (!ticket) {
+      ticket = { id: row.id, picks: row.picks, stake: row.stake, status: "pending", autoplay: row.autoplay };
+      bucket.tickets.push(ticket);
+      // A ticket that was already settled before this client ever saw it
+      // isn't news: it's listed, but doesn't bring up a result.
+      if (row.status === "pending") bucket.pendingIds.add(row.id);
+    }
+    if (row.status === "pending") continue;
+    if (bucket.pendingIds.has(row.id)) {
+      bucket.pendingIds.delete(row.id);
+      bucket.settled.push({
+        ticket_id: row.id, matches: row.matches, payout: row.payout || "0", jackpot_payout: row.jackpot_payout,
+        stake: row.stake, refunded: row.status === "refunded",
+      });
+      resolvedNow = true;
+    }
+    ticket.status = row.status;
+    ticket.payout = row.payout;
+    ticket.matches = row.matches;
+  }
+  if (currentRound && currentRound.round_id === roundId) renderMyTickets();
+  updateClosingConfirmation();
+  if ((hadPending || resolvedNow) && bucket.pendingIds.size === 0 && bucket.settled.length > 0) {
+    finishRound(roundId, bucket);
+  }
+}
+
+function showAutoplayRoundResult(settled) {
+  const payout = settled.reduce((sum, r) => sum + Number(r.payout || 0) + Number(r.jackpot_payout || 0), 0);
+  if (settled.every((r) => r.refunded)) {
+    const stake = settled.reduce((sum, r) => sum + Number(r.stake || 0), 0);
+    setPlayStatus("keno.autoplay_round_refunded", null, { amount: stake.toFixed(2) });
+  } else if (payout > 0) {
+    setPlayStatus("keno.autoplay_round_won", "success", { amount: payout.toFixed(2) });
+  } else {
+    setPlayStatus("keno.autoplay_round_lost", null);
+  }
 }
 
 function updateClosingConfirmation() {
@@ -384,10 +471,10 @@ const ERROR_KEYS = new Set([
   "keno_not_on_allowlist", "invalid_idempotency_key",
 ]);
 
-function setPlayStatus(key, kind) {
+function setPlayStatus(key, kind, params) {
   el("keno-deposit-btn").classList.add("hidden");
   const node = el("keno-play-status");
-  node.textContent = key ? t(key) : "";
+  node.textContent = key ? t(key, params) : "";
   node.classList.remove("error", "success");
   if (kind) node.classList.add(kind);
 }
@@ -417,8 +504,10 @@ async function handlePlay() {
     }
     lastPlacedPicks = picks.slice();
     const bucket = ticketBucket(roundId);
-    bucket.pendingIds.add(data.id);
-    bucket.tickets.push({ id: data.id, picks: data.picks, stake: data.stake, status: "pending" });
+    if (!bucket.tickets.some((tk) => tk.id === data.id)) {
+      bucket.pendingIds.add(data.id);
+      bucket.tickets.push({ id: data.id, picks: data.picks, stake: data.stake, status: "pending" });
+    }
     renderMyTickets();
     updateClosingConfirmation();
     haptics.success();
@@ -680,7 +769,22 @@ async function refreshState() {
     return;
   }
   onNewRoundSnapshot();
+  await syncTickets();
 }
+
+// Back from a dropped connection or from the background: events may have
+// been missed, so re-read the round and the tickets.
+let lastConnection = getState().connection;
+subscribe((state) => {
+  const reconnected = state.connection === "connected" && lastConnection !== "connected";
+  lastConnection = state.connection;
+  if (reconnected && boardBuilt && String(state.screen || "").startsWith("keno")) refreshState();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && boardBuilt && String(getState().screen || "").startsWith("keno")) {
+    refreshState();
+  }
+});
 
 function onNewRoundSnapshot() {
   el("keno-jackpot-amount").textContent = `${currentRound.jackpot_pool} ETB`;
@@ -830,6 +934,9 @@ ws.on("keno.betting.closed", (msg) => {
   // 0) stayed on screen straight through the draw, never re-evaluated
   // once status left betting_open.
   renderEmptyHint();
+  // Autoplay places its ticket server-side; once betting has closed this
+  // round's tickets are final, so pick them up.
+  syncTickets();
 });
 
 ws.on("keno.draw.started", (msg) => {
@@ -923,10 +1030,7 @@ ws.on("keno.ticket.settled", (msg) => {
   }
   if (currentRound && currentRound.round_id === msg.round_id) renderMyTickets();
   updateClosingConfirmation();
-  if (bucket.pendingIds.size === 0) {
-    showResult(msg.round_id, bucket.settled);
-    roundTickets.delete(msg.round_id);
-  }
+  if (bucket.pendingIds.size === 0) finishRound(msg.round_id, bucket);
 });
 
 function ticketStatusText(ticket) {
@@ -950,10 +1054,7 @@ ws.on("keno.ticket.refunded", (msg) => {
   }
   if (currentRound && currentRound.round_id === msg.round_id) renderMyTickets();
   updateClosingConfirmation();
-  if (bucket.pendingIds.size === 0) {
-    showResult(msg.round_id, bucket.settled);
-    roundTickets.delete(msg.round_id);
-  }
+  if (bucket.pendingIds.size === 0) finishRound(msg.round_id, bucket);
 });
 
 // --- result screen -----------------------------------------------------
