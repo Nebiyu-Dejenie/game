@@ -170,15 +170,25 @@ async def place_ticket(
     """Public entry point: delegates to _place_ticket, incrementing
     keno_bet_rejections_total{reason} on any typed rejection (Part 16)
     before re-raising -- one choke point rather than an increment at
-    every individual raise site in _place_ticket below."""
+    every individual raise site in _place_ticket below.
+
+    Once the ticket has committed, the player's new balance is pushed to
+    their Mini App (2026-10-02). It used to stay at the pre-stake figure
+    until something else refreshed it, for a manual ticket and for every
+    autoplay ticket alike. Best effort: the ticket is placed either way."""
     try:
-        return await _place_ticket(
+        ticket = await _place_ticket(
             pool, redis, user_id=user_id, picks=picks, stake=stake, idempotency_key=idempotency_key,
             autoplay_session_id=autoplay_session_id,
         )
     except TicketRejected as exc:
         metrics.keno_bet_rejections_total.labels(reason=exc.code).inc()
         raise
+    try:
+        await ledger.publish_balance_update(pool, redis, user_id)  # type: ignore[arg-type]
+    except Exception:
+        logger.warning("keno_stake_balance_publish_failed", user_id=user_id, ticket_id=ticket.id, exc_info=True)
+    return ticket
 
 
 async def _place_ticket(

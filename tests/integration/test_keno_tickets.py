@@ -617,3 +617,30 @@ async def test_a_pick_count_outside_the_configured_range_is_refused(pool: asyncp
                 "UPDATE keno_configs SET min_picks = 1 WHERE id = "
                 "(SELECT id FROM keno_configs WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1)"
             )
+
+
+async def test_a_placed_ticket_pushes_the_new_balance_to_the_player(pool: asyncpg.Pool, redis) -> None:
+    """The Mini App's balance stayed at the pre-stake figure after a Keno
+    ticket, manual or autoplay, until something else refreshed it."""
+    async with pool.acquire() as conn:
+        await _seed_keno_round(conn)
+        await _fund_reserve(conn, Decimal("40000"))
+        user_id = await create_funded_user(conn, Decimal("1000.00"))
+
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(f"user:{user_id}")
+    try:
+        await keno_tickets.place_ticket(
+            pool, redis, user_id=user_id, picks=[7], stake=Decimal("10"), idempotency_key=f"test-{uuid.uuid4()}",
+        )
+        received: list[dict] = []
+        deadline = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < deadline and not received:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+            if msg is not None:
+                received.append(json.loads(msg["data"]))
+    finally:
+        await pubsub.aclose()
+    assert received, "no balance_update was published"
+    assert received[0]["t"] == "balance_update"
+    assert received[0]["cash"] == "990.00"
