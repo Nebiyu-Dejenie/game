@@ -1703,6 +1703,35 @@ async def test_portal_command_sends_a_login_link_only_to_an_active_agent(pool, r
     assert unparseable_count == 0
 
 
+async def test_an_agent_in_a_group_chat_gets_no_login_link_and_files_no_evidence(pool, redis, bot_ctx):
+    """The /portal reply went to the chat it was typed in, so in a group
+    anyone there could use the login link first; and any text the agent
+    wrote in a group was filed as Telebirr evidence (2026-10-02)."""
+    dp, bot, session = bot_ctx
+    agent_telegram_id = next_telegram_id()
+    await pool.execute(
+        "INSERT INTO payment_agents (telegram_user_id, display_name, is_active) VALUES ($1, $2, true)",
+        agent_telegram_id,
+        "Group Chat Agent",
+    )
+    user = User(id=agent_telegram_id, is_bot=False, first_name="Agent")
+    for text in ("/portal", "Dear Abebe You have received ETB 500.00 transaction number is ABC123XYZ9"):
+        message = Message(
+            message_id=next(_id_counter),
+            date=datetime.now(timezone.utc),
+            chat=Chat(id=-1001234567890, type="supergroup"),
+            from_user=user,
+            text=text,
+        )
+        await dp.feed_update(bot, Update(update_id=next(_id_counter), message=message))
+    await _settle()
+
+    assert all("/login?token=" not in (m.text or "") for m in session.sent)
+    assert await pool.fetchval(
+        "SELECT count(*) FROM payment_evidence WHERE source_ref = $1", str(agent_telegram_id)
+    ) == 0
+
+
 async def test_portal_command_ignored_for_an_unregistered_sender(pool, bot_ctx):
     dp, bot, session = bot_ctx
     stranger_telegram_id = next_telegram_id()

@@ -688,7 +688,7 @@ async def _is_active_payment_agent(message: Message, pool: asyncpg.Pool) -> bool
     return row is not None
 
 
-@router.message(Command("portal"), _is_active_payment_agent)
+@router.message(Command("portal"), F.chat.type == "private", _is_active_payment_agent)
 async def on_agent_portal_command(
     message: Message, pool: asyncpg.Pool, redis: Redis, notifier: Notifier, settings: Settings
 ) -> None:
@@ -704,6 +704,10 @@ async def on_agent_portal_command(
     rather than standing up a second credential system (see
     services/payments/agent_auth.py's own docstring for the full
     reasoning).
+
+    Private chats only, for both agent handlers: in a group, the link
+    would be posted for anyone there to use first, and the agent's
+    ordinary messages would be filed as Telebirr evidence (2026-10-02).
     """
     assert message.from_user is not None
     language = await _language_for(pool, message.from_user.id)
@@ -716,7 +720,7 @@ async def on_agent_portal_command(
     await notifier.send(message.chat.id, t("agent.portal_link", language, url=url))
 
 
-@router.message(F.text, _is_active_payment_agent)
+@router.message(F.text, F.chat.type == "private", _is_active_payment_agent)
 async def on_agent_sms(message: Message, pool: asyncpg.Pool, notifier: Notifier) -> None:
     """Telegram payment-agent SMS-forwarding channel (CTO directive
     section 115) -- a thin adapter: the filter above authenticates the
