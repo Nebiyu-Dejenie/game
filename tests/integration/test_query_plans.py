@@ -28,3 +28,19 @@ async def test_a_bonus_is_found_by_its_grant_transaction_without_scanning_bonuse
         1,
     )
     assert "Seq Scan on bonuses" not in plan, plan
+
+
+async def test_an_autoplay_sessions_tickets_are_summed_without_scanning_every_keno_ticket(conn) -> None:
+    # keno_tickets._check_autoplay_loss_limit() runs this for every
+    # autoplay placement with a stop-loss: once per active session per
+    # round, while that player's locks are held. keno_tickets keeps every
+    # ticket ever placed.
+    plan = await _plan(
+        conn,
+        "SELECT COALESCE(SUM(CASE status WHEN 'refunded' THEN 0 WHEN 'pending' THEN -stake "
+        "ELSE COALESCE(payout, 0) + COALESCE(jackpot_payout, 0) - stake END), 0) AS worst_case_net, "
+        "count(*) FILTER (WHERE status = 'pending') AS unsettled "
+        "FROM keno_tickets WHERE autoplay_session_id = $1",
+        1,
+    )
+    assert "Seq Scan on keno_tickets" not in plan, plan

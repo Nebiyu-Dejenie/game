@@ -6,7 +6,7 @@ other document goes deeper on one topic; this one links to them.
 
 **Last updated:** 2026-10-05 · **Production:** `7fb013f` (release 2, deployed 2026-10-01 12:24 UTC) ·
 **Main:** `36f9846`, release 3 candidate: CI green, deploy blocked on the network path (D1) ·
-**Alembic head:** `ce874c0262e7` on branch `claude/eloquent-euler-cwpo2c` (production and main: `b5d9e3a1c7f2`)
+**Alembic head:** `a15bff4b994f` on branch `claude/eloquent-euler-cwpo2c` (production and main: `b5d9e3a1c7f2`)
 
 ## Contents
 
@@ -270,7 +270,7 @@ The major milestones. Details in git and the linked docs.
 | Keno launch Steps 3–4 | Reserve funded (Step 2). Step 3 needs tester identities from the operator | See [Keno Launch Plan](#keno-launch-plan) |
 | Audit medium/low verification | 66 not yet verified | Money paths first; see [Recommended Next Work](#recommended-next-work) |
 | Lock-order sweep | Done for Keno and payments; admin, bot and gateway still to do | |
-| Performance pass (operator request, 2026-10-05) | Behaviour-preserving, measured changes on branch `claude/eloquent-euler-cwpo2c`, not on main or deployed. Done: the gateway fan-out mailbox; the Bingo auto-mark scan; the splash logo (1.5 MB → 143 KB); an index for the bonus-grant lookup (migration `ce874c0262e7`, so this deploy must run `migrate`) | Review, merge, deploy with the next release |
+| Performance pass (operator request, 2026-10-05) | Behaviour-preserving, measured changes on branch `claude/eloquent-euler-cwpo2c`, not on main or deployed. Done: the gateway fan-out mailbox; the Bingo auto-mark scan; the splash logo (1.5 MB → 143 KB); indexes for the bonus-grant lookup and the Keno autoplay stop-loss check (migrations `ce874c0262e7` and `a15bff4b994f`, so this deploy must run `migrate`) | Review, merge, deploy with the next release |
 
 **Step 1 pre-deploy review (2026-10-01):**
 - **Scope:** `a7603c5..main`. Every commit from the Keno fixes onward; 26 code and config files.
@@ -535,7 +535,7 @@ Source: `packages/core/ledger.py`.
 
 ## Database State
 
-- **Migrations:** 48, one straight chain from `81d041ff4513` (ledger foundation) to **`ce874c0262e7`** (an index on `bonuses.grant_txn_id`), which is on branch `claude/eloquent-euler-cwpo2c` only. Production and main are at `b5d9e3a1c7f2` (admin configuration management).
+- **Migrations:** 49, one straight chain from `81d041ff4513` (ledger foundation) to **`a15bff4b994f`** (an index on `keno_tickets.autoplay_session_id`). It and `ce874c0262e7` (an index on `bonuses.grant_txn_id`) are on branch `claude/eloquent-euler-cwpo2c` only. Production and main are at `b5d9e3a1c7f2` (admin configuration management).
 - **Tables by domain:**
   - **Identity:** `users`, `responsible_gaming_limits`.
   - **Ledger:** `accounts`, `ledger_transactions`, `ledger_entries`, `account_balances`.
@@ -840,7 +840,7 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
-- **2026-10-05:** Performance pass started on branch `claude/eloquent-euler-cwpo2c` (nothing merged or deployed). The gateway fan-out mailbox no longer races two tasks per message: one Bingo call reaches 1,000 parked sockets in 2.5 ms instead of 24 ms, explaining most of the load test's p99 miss. The Bingo auto-mark scan checks precomputed line sets: 1.6 ms per call instead of 11.6 ms at 2,000 cards, same verdict. The Mini App's splash logo is a 720 px JPEG (143 KB) instead of a 1254 px PNG (1.5 MB). Migration `ce874c0262e7` indexes `bonuses.grant_txn_id`: every bonus grant scanned the whole table while holding the `promo_expense` row lock. `test_project_state_doc.py` now reads single-quoted migration ids, which it had silently skipped (38 of 48).
+- **2026-10-05:** Performance pass started on branch `claude/eloquent-euler-cwpo2c` (nothing merged or deployed). The gateway fan-out mailbox no longer races two tasks per message: one Bingo call reaches 1,000 parked sockets in 2.5 ms instead of 24 ms, explaining most of the load test's p99 miss. The Bingo auto-mark scan checks precomputed line sets: 1.6 ms per call instead of 11.6 ms at 2,000 cards, same verdict. The Mini App's splash logo is a 720 px JPEG (143 KB) instead of a 1254 px PNG (1.5 MB). Migration `ce874c0262e7` indexes `bonuses.grant_txn_id`: every bonus grant scanned the whole table while holding the `promo_expense` row lock. Migration `a15bff4b994f` indexes `keno_tickets.autoplay_session_id`: every autoplay placement with a stop-loss scanned every Keno ticket ever placed. `test_project_state_doc.py` now reads single-quoted migration ids, which it had silently skipped (38 of 48).
 - **2026-10-02 (later):** Main pushed to `36f9846`; CI green. Three test-only fixes on the way: a history test leaked an open Keno round into the chaos test; two timing-flaky tests (the Bingo double-claim refusal reason, the device-console reactivate wait). The bot agent filter uses `ChatType.PRIVATE`. The release 3 deploy is blocked: the dev machine can't reach 192.168.1.115, and `ssh.arada.click` waits on the operator (D1). Production healthy (`/healthz` 200), still at `7fb013f`.
 - **2026-10-02:** Keno end-to-end work on main under the operator's directive to finish Keno (nothing deployed): correlated exposure (D4 done), server-side pick limits, refund notices, Keno in wallet history, a balance push after a stake, no early draw numbers, ticket resync, the balance on the Keno screen, and admin config integrity fixes. Admin and agent-portal audits recorded under Known Bugs. New decisions D15–D17; the agent-portal evidence findings added to D9.
 - **2026-10-01 12:24 UTC:** **Release 2 deployed** (`7fb013f`): the fixes for #77 (whole cents), #69/#73 (deposit cap), #36/#67 (bonus race and sweep) and #81 (withdrawal retry). Every check passed and reconcile was OK before and after.
