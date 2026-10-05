@@ -17,17 +17,23 @@ DOC = DOC_PATH.read_text(encoding="utf-8")
 
 
 def _alembic_head() -> str:
+    # Either quote: Alembic's own template writes revision = '...', and 38
+    # of the 48 migrations at 2026-10-05 use it. Matching only "..." made
+    # this skip them, so a new single-quoted head went unnoticed.
     revisions: set[str] = set()
     parents: set[str] = set()
+    unread: list[str] = []
     for path in (ROOT / "migrations" / "versions").glob("*.py"):
         text = path.read_text(encoding="utf-8")
-        revision = re.search(r'^revision(?::[^=]*)?\s*=\s*"([0-9a-f]+)"', text, re.M)
+        revision = re.search(r"""^revision(?::[^=]*)?\s*=\s*["']([0-9a-f]+)["']""", text, re.M)
         if revision is None:
+            unread.append(path.name)
             continue
         revisions.add(revision.group(1))
         down = re.search(r"^down_revision(?::[^=]*)?\s*=\s*(.+)$", text, re.M)
         if down is not None:
-            parents.update(re.findall(r'"([0-9a-f]+)"', down.group(1)))
+            parents.update(re.findall(r"""["']([0-9a-f]+)["']""", down.group(1)))
+    assert unread == [], f"no revision id found in {unread}"
     heads = revisions - parents
     assert len(heads) == 1, f"expected one alembic head, found {sorted(heads)}"
     return heads.pop()
