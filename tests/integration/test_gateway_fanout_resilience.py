@@ -23,8 +23,8 @@ async def _delivered(redis, cq: ConnectionQueue, channel: str, text: str, *, wit
     while asyncio.get_running_loop().time() < deadline:
         await redis.publish(channel, text)
         await asyncio.sleep(0.2)
-        while not cq.queue.empty():
-            if cq.queue.get_nowait() == text:
+        while cq.qsize():
+            if await cq.get_or_wake() == text:
                 return True
     return False
 

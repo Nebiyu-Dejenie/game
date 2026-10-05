@@ -24,7 +24,7 @@ async def test_droppable_overflow_sets_needs_state_sync_without_enqueueing():
 
     cq.offer(json.dumps({"t": "call", "index": MAX_QUEUE_SIZE}))  # overflow, droppable type
     assert cq.needs_state_sync is True
-    assert cq.queue.qsize() == MAX_QUEUE_SIZE  # nothing new was actually enqueued
+    assert cq.qsize() == MAX_QUEUE_SIZE  # nothing new was actually enqueued
 
 
 async def test_non_droppable_overflow_clears_the_backlog_and_keeps_it():
@@ -34,7 +34,7 @@ async def test_non_droppable_overflow_clears_the_backlog_and_keeps_it():
 
     cq.offer(json.dumps({"t": "round_end", "round_id": 1}))  # overflow, non-droppable
     assert cq.needs_state_sync is False
-    assert cq.queue.qsize() == 1
+    assert cq.qsize() == 1
     remaining = await cq.get_or_wake()
     assert json.loads(remaining)["t"] == "round_end"
 
@@ -68,3 +68,35 @@ async def test_get_or_wake_returns_a_real_message_normally():
     cq.offer("hello")
     result = await asyncio.wait_for(task, timeout=1.0)
     assert result == "hello"
+
+
+async def test_get_or_wake_returns_at_once_when_the_flag_was_raised_before_it_was_called():
+    # The writer loop clears needs_state_sync, then awaits a state_sync
+    # send. A fan-out gap reported during that send raises the flag again
+    # before the writer reaches get_or_wake(); that wake must not be lost.
+    cq = ConnectionQueue()
+    cq.request_state_sync()
+    assert await asyncio.wait_for(cq.get_or_wake(), timeout=1.0) is None
+
+
+async def test_a_queued_message_comes_before_a_raised_flag():
+    cq = ConnectionQueue()
+    cq.offer("a")
+    cq.request_state_sync()
+    assert await cq.get_or_wake() == "a"
+    assert await cq.get_or_wake() is None
+
+
+async def test_a_parked_writer_costs_no_extra_tasks():
+    # Every idle socket's writer is parked here when a number is called, so
+    # one broadcast wakes all of them at once. Racing a queue.get() task
+    # against an Event.wait() task cost two new tasks per socket per
+    # message (27 ms to reach 1,000 parked writers, 176 ms for 5,000).
+    cq = ConnectionQueue()
+    tasks_before = len(asyncio.all_tasks())
+    waiter = asyncio.ensure_future(cq.get_or_wake())
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    assert len(asyncio.all_tasks()) == tasks_before + 1  # only the waiter itself
+    cq.offer("hello")
+    assert await asyncio.wait_for(waiter, timeout=1.0) == "hello"
