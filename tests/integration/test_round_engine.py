@@ -14,7 +14,12 @@ from packages.core import bingo, ledger
 from services.engine import refunds, round_engine, settlement
 from services.engine.round_engine import ClaimResult, RoundEngine, load_room_config
 from services.gateway import queries as gateway_queries
-from tests.integration.conftest import create_funded_user, create_room, recv_balance_update
+from tests.integration.conftest import (
+    create_funded_user,
+    create_room,
+    recv_balance_update,
+    route_auto_scan_through_winning_patterns,
+)
 
 
 async def wait_until(predicate, timeout: float = 10.0, interval: float = 0.01) -> None:
@@ -532,6 +537,7 @@ async def test_two_simultaneous_auto_mark_winners_both_split_derash(pool, redis,
 
         await wait_until(lambda: engine.status == "running", timeout=5)
         monkeypatch.setattr(round_engine.bingo, "winning_patterns", fake_winning_patterns)
+        route_auto_scan_through_winning_patterns(monkeypatch, card_pool)
 
         await wait_until(lambda: engine.status == "idle", timeout=15)
 
@@ -604,6 +610,7 @@ async def test_settlement_publishes_winner_balance_updates_concurrently(
 
         await wait_until(lambda: engine.status == "running", timeout=5)
         monkeypatch.setattr(round_engine.bingo, "winning_patterns", fake_winning_patterns)
+        route_auto_scan_through_winning_patterns(monkeypatch, card_pool)
 
         real_publish = ledger.publish_balance_update
         published_at: dict[int, float] = {}
@@ -694,6 +701,7 @@ async def test_an_unexpected_exception_during_auto_claim_does_not_crash_the_room
 
         await wait_until(lambda: engine.status == "running", timeout=5)
         monkeypatch.setattr(round_engine.bingo, "winning_patterns", fake_winning_patterns)
+        route_auto_scan_through_winning_patterns(monkeypatch, card_pool)
         monkeypatch.setattr(engine, "claim", flaky_claim)
 
         await wait_until(lambda: engine.status == "idle" and engine.round_id is None, timeout=15)

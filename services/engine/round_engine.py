@@ -145,6 +145,9 @@ class RoundEngine:
         self._redis = redis
         self._room = room
         self._card_pool = card_pool
+        # Every auto-mark card is win-checked on every call; precomputing
+        # each card's lines once keeps that scan cheap (bingo.card_lines()).
+        self._card_lines = {no: bingo.card_lines(grid) for no, grid in card_pool.items()}
         self._lock = RoomLock(redis, room.id, worker_id)
 
         self._stop_requested = False
@@ -1026,14 +1029,14 @@ class RoundEngine:
         # every same-call winner is in _pending_winners.
         call_time = time.monotonic()
         auto_claims: list[tuple[int, int]] = []
+        enabled_patterns = frozenset(self._room.win_patterns)
         for (user_id, card_no), entry in list(self._entries.items()):
             if not entry.auto_mark:
                 continue
             if (user_id, card_no) in self._auto_claimed or (user_id, card_no) in self._locked_out:
                 continue
-            grid = self._card_pool[entry.card_no]
-            if bingo.has_won(
-                grid, self._called, self._room.win_patterns,
+            if bingo.has_won_by_lines(
+                self._card_lines[entry.card_no], self._called, enabled_patterns,
                 min_winning_lines=self._room.min_winning_lines,
             ):
                 self._auto_claimed.add((user_id, card_no))

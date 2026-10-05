@@ -55,7 +55,7 @@ os.environ.setdefault(
 # exact secret the running payments_server instance was configured with.
 os.environ.setdefault("MACRODROID_INGEST_TOKEN", "test-macrodroid-token-for-suite")
 
-from packages.core import ledger
+from packages.core import bingo, ledger
 from packages.core.config import get_settings
 from packages.core.notifications import NOTIFICATIONS_STREAM
 from packages.core.redis_conn import get_redis
@@ -375,6 +375,22 @@ async def recv_balance_update(redis, user_id: int, trigger) -> dict:
     finally:
         await pubsub.unsubscribe(f"user:{user_id}")
         await pubsub.aclose()
+
+
+def route_auto_scan_through_winning_patterns(monkeypatch, card_pool) -> None:
+    """The engine's auto-mark scan decides from each card's precomputed
+    lines (bingo.has_won_by_lines), not bingo.winning_patterns(). Tests
+    that fake winning_patterns() to make chosen cards win on a chosen call
+    call this too, so the scan sees the same fake. winning_patterns is
+    looked up at call time, so the order of the two patches doesn't matter.
+    """
+    grid_by_lines = {bingo.card_lines(grid): grid for grid in card_pool.values()}
+
+    def has_won_by_lines(lines, called, enabled, min_winning_lines=bingo.MIN_WINNING_LINES):
+        complete = bingo.winning_patterns(grid_by_lines[lines], called, list(enabled))
+        return len(complete) >= min_winning_lines
+
+    monkeypatch.setattr(bingo, "has_won_by_lines", has_won_by_lines)
 
 
 async def create_room(

@@ -224,6 +224,49 @@ def test_has_won_with_min_winning_lines_3_three_lines_wins():
     assert bingo.has_won(grid, three_rows, ALL_KINDS, min_winning_lines=3) is True
 
 
+def test_has_won_by_lines_matches_winning_patterns_on_real_cards_and_draws():
+    # The engine's auto-mark scan uses precomputed card_lines() (a real
+    # -money win verdict), so it must agree with counting
+    # winning_patterns() for every card, draw prefix, pattern subset and
+    # threshold. Seeded, so a failure reproduces.
+    import itertools
+    import random
+
+    rng = random.Random(20261005)
+    pool = bingo.generate_card_pool()
+    lines = [bingo.card_lines(grid) for grid in pool]
+    subsets = [
+        list(combo)
+        for size in range(1, len(ALL_KINDS) + 1)
+        for combo in itertools.combinations(ALL_KINDS, size)
+    ]
+    checked = 0
+    for _ in range(20):
+        draw = list(range(1, 76))
+        rng.shuffle(draw)
+        called: set[int] = set()
+        for number in draw:
+            called.add(number)
+            for card_index in rng.sample(range(len(pool)), 10):
+                for enabled in subsets:
+                    complete = len(bingo.winning_patterns(pool[card_index], called, enabled))
+                    for min_lines in range(0, 6):
+                        assert bingo.has_won_by_lines(
+                            lines[card_index], called, frozenset(enabled), min_lines
+                        ) is (complete >= min_lines)
+                        checked += 1
+    assert checked == 20 * 75 * 10 * len(subsets) * 6
+
+
+def test_card_lines_leave_out_the_free_centre():
+    # Rows 0-4, columns 0-4, then the main and anti diagonals. The middle
+    # row, middle column and both diagonals run through the free centre.
+    lines = bingo.card_lines(make_grid())
+    assert [kind for kind, _ in lines] == ["row"] * 5 + ["col"] * 5 + ["diag"] * 2
+    assert [len(numbers) for _, numbers in lines] == [5, 5, 4, 5, 5, 5, 5, 4, 5, 5, 4, 4]
+    assert all(0 not in numbers for _, numbers in lines)  # make_grid()'s centre is 0
+
+
 def test_letter_for_and_label():
     assert bingo.letter_for(1) == "B"
     assert bingo.letter_for(15) == "B"

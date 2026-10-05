@@ -21,7 +21,11 @@ import redis.exceptions
 from packages.core import bingo, ledger
 from services.engine import commands, recovery, round_engine
 from services.engine.round_engine import RoundEngine, load_room_config
-from tests.integration.conftest import create_funded_user, create_room
+from tests.integration.conftest import (
+    create_funded_user,
+    create_room,
+    route_auto_scan_through_winning_patterns,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -108,6 +112,7 @@ def _card_1_wins(monkeypatch, card_pool) -> None:
     monkeypatch.setattr(
         round_engine.bingo, "winning_patterns", lambda grid, called, enabled: _TWO_LINES if grid is grid_a else []
     )
+    route_auto_scan_through_winning_patterns(monkeypatch, card_pool)
 
 
 async def _winners(pool, round_id: int) -> set[int]:
@@ -226,6 +231,7 @@ async def test_same_call_auto_mark_winners_all_win_even_when_claim_logging_is_sl
         "winning_patterns",
         lambda grid, called, enabled: _TWO_LINES if any(grid is g for g in grids) else [],
     )
+    route_auto_scan_through_winning_patterns(monkeypatch, card_pool)
     real_record = RoundEngine._record_claim_attempt
 
     async def slow_record(self, *args, **kwargs):
