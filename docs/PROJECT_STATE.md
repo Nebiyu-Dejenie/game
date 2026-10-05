@@ -671,11 +671,11 @@ Source: `packages/core/ledger.py`.
 
 ## Testing Status
 
-- **Suite:** 33 unit files, 125 integration files (17 of them browser e2e), 7 frontend `.mjs` files.
+- **Suite:** 34 unit files, 131 integration files (17 of them browser e2e), 7 frontend `.mjs` files.
 - **Default run:** excludes the `load`, `e2e`, `chaos_infra` and `keno_statistical` markers.
-- **Latest full run** (2026-09-30, main): **1,863 passed, 2 failed, 3 xfailed**; mypy clean across 166 files.
-  - The 2 failures are the backup drills, which can't run against a throwaway database.
-  - The 3 xfails are strict and wait on operator decisions (#25, #30, #57).
+- **Latest full run** (2026-10-05, branch `claude/eloquent-euler-cwpo2c` at `8f62a81`, migrated to `a15bff4b994f`): **1,911 passed, 2 failed, 5 xfailed**; mypy clean across 168 files. Browser e2e on a second throwaway database: **101 passed**.
+  - The 2 failures are the backup drills, which can't run against a throwaway database ("service postgres is not running").
+  - The 5 xfails are strict and wait on operator decisions (#25, #30, #57, D15, D16).
 - **Run it locally:**
 
   ```bash
