@@ -270,7 +270,7 @@ The major milestones. Details in git and the linked docs.
 | Keno launch Steps 3–4 | Reserve funded (Step 2). Step 3 needs tester identities from the operator | See [Keno Launch Plan](#keno-launch-plan) |
 | Audit medium/low verification | 66 not yet verified | Money paths first; see [Recommended Next Work](#recommended-next-work) |
 | Lock-order sweep | Done for Keno and payments; admin, bot and gateway still to do | |
-| Performance pass (operator request, 2026-10-05) | Behaviour-preserving, measured changes on branch `claude/eloquent-euler-cwpo2c`, not on main or deployed. Done: the gateway fan-out mailbox; the Bingo auto-mark scan | Review, merge, deploy with the next release |
+| Performance pass (operator request, 2026-10-05) | Behaviour-preserving, measured changes on branch `claude/eloquent-euler-cwpo2c`, not on main or deployed. Done: the gateway fan-out mailbox; the Bingo auto-mark scan; the splash logo (1.5 MB → 143 KB) | Review, merge, deploy with the next release |
 
 **Step 1 pre-deploy review (2026-10-01):**
 - **Scope:** `a7603c5..main`. Every commit from the Keno fixes onward; 26 code and config files.
@@ -840,7 +840,7 @@ In order. Each item says what it unblocks.
 
 ## Change Log
 
-- **2026-10-05:** Performance pass started on branch `claude/eloquent-euler-cwpo2c` (nothing merged or deployed). The gateway fan-out mailbox no longer races two tasks per message: one Bingo call reaches 1,000 parked sockets in 2.5 ms instead of 24 ms, explaining most of the load test's p99 miss. The Bingo auto-mark scan checks precomputed line sets: 1.6 ms per call instead of 11.6 ms at 2,000 cards, same verdict.
+- **2026-10-05:** Performance pass started on branch `claude/eloquent-euler-cwpo2c` (nothing merged or deployed). The gateway fan-out mailbox no longer races two tasks per message: one Bingo call reaches 1,000 parked sockets in 2.5 ms instead of 24 ms, explaining most of the load test's p99 miss. The Bingo auto-mark scan checks precomputed line sets: 1.6 ms per call instead of 11.6 ms at 2,000 cards, same verdict. The Mini App's splash logo is a 720 px JPEG (143 KB) instead of a 1254 px PNG (1.5 MB).
 - **2026-10-02 (later):** Main pushed to `36f9846`; CI green. Three test-only fixes on the way: a history test leaked an open Keno round into the chaos test; two timing-flaky tests (the Bingo double-claim refusal reason, the device-console reactivate wait). The bot agent filter uses `ChatType.PRIVATE`. The release 3 deploy is blocked: the dev machine can't reach 192.168.1.115, and `ssh.arada.click` waits on the operator (D1). Production healthy (`/healthz` 200), still at `7fb013f`.
 - **2026-10-02:** Keno end-to-end work on main under the operator's directive to finish Keno (nothing deployed): correlated exposure (D4 done), server-side pick limits, refund notices, Keno in wallet history, a balance push after a stake, no early draw numbers, ticket resync, the balance on the Keno screen, and admin config integrity fixes. Admin and agent-portal audits recorded under Known Bugs. New decisions D15–D17; the agent-portal evidence findings added to D9.
 - **2026-10-01 12:24 UTC:** **Release 2 deployed** (`7fb013f`): the fixes for #77 (whole cents), #69/#73 (deposit cap), #36/#67 (bonus race and sweep) and #81 (withdrawal retry). Every check passed and reconcile was OK before and after.
